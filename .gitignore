@@ -1,0 +1,35 @@
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# OpenVPN generated client profiles & cert backups
+*.ovpn
+*.crt
+*.key
+*.pem
+*.csr
+*.rsc
+*.tar.gz
+*.tgz
+openvpn-clients-backup-*.tar.gz
+client-profiles/
+pki/
+
+# Temporary logs & dynamic runtime output
+*.log
+scratch/
+installer-vars.conf
+EOF

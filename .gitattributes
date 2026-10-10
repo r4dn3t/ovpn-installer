@@ -1,0 +1,9 @@
+# Set default behavior for git text handling
+* text=auto
+
+# Enforce Unix line endings (LF) for all shell scripts and documentation
+*.sh text eol=lf
+*.rsc text eol=lf
+*.md text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
