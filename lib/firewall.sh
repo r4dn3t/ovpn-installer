@@ -3,12 +3,13 @@
 # Firewall & NAT Rules Management Helper for OpenVPN Installer
 # ==============================================================================
 
-# Apply iptables NAT & Forwarding rules (including Docker compatibility)
+# Apply iptables NAT & Forwarding rules (including Docker compatibility & SNAT)
 apply_iptables_rules() {
     local proto="${1:-udp}"
     local port="${2:-1194}"
     local subnet="${3:-10.8.0.0/24}"
     local iface="${4:-}"
+    local public_ip="${5:-${PUBLIC_IP:-}}"
 
     if [[ -z "$iface" ]]; then
         iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
@@ -46,15 +47,23 @@ apply_iptables_rules() {
         iptables -I DOCKER-USER 4 -o tun+ -j ACCEPT
     fi
 
-    # 4. NAT Table POSTROUTING Masquerade
-    if [[ -n "$iface" ]]; then
-        iptables -t nat -C POSTROUTING -s "$subnet" -o "$iface" -j MASQUERADE 2>/dev/null || \
-        iptables -t nat -I POSTROUTING 1 -s "$subnet" -o "$iface" -j MASQUERADE
+    # 4. NAT Table POSTROUTING: SNAT to true public IP if multi-IP/alias interface, else MASQUERADE
+    if is_valid_ip "$public_ip" && [[ "$public_ip" != "127.0.0.1" ]]; then
+        if [[ -n "$iface" ]]; then
+            iptables -t nat -C POSTROUTING -s "$subnet" -o "$iface" -j SNAT --to-source "$public_ip" 2>/dev/null || \
+            iptables -t nat -I POSTROUTING 1 -s "$subnet" -o "$iface" -j SNAT --to-source "$public_ip"
+        fi
+        iptables -t nat -C POSTROUTING -s "$subnet" ! -d "$subnet" -j SNAT --to-source "$public_ip" 2>/dev/null || \
+        iptables -t nat -I POSTROUTING 2 -s "$subnet" ! -d "$subnet" -j SNAT --to-source "$public_ip"
     fi
 
-    # Outbound masquerade fallback (any non-VPN destination)
+    # Fallback dynamic MASQUERADE
+    if [[ -n "$iface" ]]; then
+        iptables -t nat -C POSTROUTING -s "$subnet" -o "$iface" -j MASQUERADE 2>/dev/null || \
+        iptables -t nat -A POSTROUTING -s "$subnet" -o "$iface" -j MASQUERADE
+    fi
     iptables -t nat -C POSTROUTING -s "$subnet" ! -d "$subnet" -j MASQUERADE 2>/dev/null || \
-    iptables -t nat -I POSTROUTING 2 -s "$subnet" ! -d "$subnet" -j MASQUERADE
+    iptables -t nat -A POSTROUTING -s "$subnet" ! -d "$subnet" -j MASQUERADE
 }
 
 # Create persistent script and systemd unit for firewall & NAT rules
@@ -63,6 +72,7 @@ create_persistent_firewall_script() {
     local port="${2:-1194}"
     local subnet="${3:-10.8.0.0/24}"
     local iface="${4:-}"
+    local public_ip="${5:-${PUBLIC_IP:-}}"
 
     if [[ -z "$iface" ]]; then
         iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
@@ -88,11 +98,22 @@ case "\$action" in
             iptables -C DOCKER-USER -i tun+ -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 3 -i tun+ -j ACCEPT
             iptables -C DOCKER-USER -o tun+ -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 4 -o tun+ -j ACCEPT
         fi
+EOF
 
+    if is_valid_ip "$public_ip" && [[ "$public_ip" != "127.0.0.1" ]]; then
+        cat <<EOF >> /etc/openvpn/iptables-rules.sh
         if [[ -n "${iface}" ]]; then
-            iptables -t nat -C POSTROUTING -s ${subnet} -o ${iface} -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${subnet} -o ${iface} -j MASQUERADE
+            iptables -t nat -C POSTROUTING -s ${subnet} -o ${iface} -j SNAT --to-source ${public_ip} 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${subnet} -o ${iface} -j SNAT --to-source ${public_ip}
         fi
-        iptables -t nat -C POSTROUTING -s ${subnet} ! -d ${subnet} -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING 2 -s ${subnet} ! -d ${subnet} -j MASQUERADE
+        iptables -t nat -C POSTROUTING -s ${subnet} ! -d ${subnet} -j SNAT --to-source ${public_ip} 2>/dev/null || iptables -t nat -I POSTROUTING 2 -s ${subnet} ! -d ${subnet} -j SNAT --to-source ${public_ip}
+EOF
+    fi
+
+    cat <<EOF >> /etc/openvpn/iptables-rules.sh
+        if [[ -n "${iface}" ]]; then
+            iptables -t nat -C POSTROUTING -s ${subnet} -o ${iface} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${subnet} -o ${iface} -j MASQUERADE
+        fi
+        iptables -t nat -C POSTROUTING -s ${subnet} ! -d ${subnet} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s ${subnet} ! -d ${subnet} -j MASQUERADE
         ;;
     stop)
         iptables -D INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null || true
@@ -107,7 +128,18 @@ case "\$action" in
             iptables -D DOCKER-USER -i tun+ -j ACCEPT 2>/dev/null || true
             iptables -D DOCKER-USER -o tun+ -j ACCEPT 2>/dev/null || true
         fi
+EOF
 
+    if is_valid_ip "$public_ip" && [[ "$public_ip" != "127.0.0.1" ]]; then
+        cat <<EOF >> /etc/openvpn/iptables-rules.sh
+        if [[ -n "${iface}" ]]; then
+            iptables -t nat -D POSTROUTING -s ${subnet} -o ${iface} -j SNAT --to-source ${public_ip} 2>/dev/null || true
+        fi
+        iptables -t nat -D POSTROUTING -s ${subnet} ! -d ${subnet} -j SNAT --to-source ${public_ip} 2>/dev/null || true
+EOF
+    fi
+
+    cat <<EOF >> /etc/openvpn/iptables-rules.sh
         if [[ -n "${iface}" ]]; then
             iptables -t nat -D POSTROUTING -s ${subnet} -o ${iface} -j MASQUERADE 2>/dev/null || true
         fi
@@ -144,6 +176,7 @@ setup_firewall() {
     local port="$2"       # 1194
     local subnet="$3"     # 10.8.0.0/24
     local iface="$4"      # eth0 / ens34 etc.
+    local public_ip="${5:-${PUBLIC_IP:-}}"
 
     msg_info "Enabling IPv4 forwarding in kernel..."
     mkdir -p /etc/sysctl.d
@@ -153,8 +186,8 @@ EOF
     sysctl --system &>/dev/null || sysctl -p /etc/sysctl.d/99-openvpn.conf &>/dev/null || echo 1 > /proc/sys/net/ipv4/ip_forward
 
     # Always apply direct iptables & Docker forwarding rules
-    apply_iptables_rules "$proto" "$port" "$subnet" "$iface"
-    create_persistent_firewall_script "$proto" "$port" "$subnet" "$iface"
+    apply_iptables_rules "$proto" "$port" "$subnet" "$iface" "$public_ip"
+    create_persistent_firewall_script "$proto" "$port" "$subnet" "$iface" "$public_ip"
 
     # Also integrate with Firewalld or UFW if active
     if systemctl is-active --quiet firewalld 2>/dev/null; then

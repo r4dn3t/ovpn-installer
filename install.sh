@@ -307,7 +307,7 @@ msg_success "Server configuration written to ${CONF_FILE}"
 # ==============================================================================
 msg_section "Step 5: Applying Firewall NAT Rules & Starting Service"
 
-setup_firewall "$OPENVPN_PROTO" "$OPENVPN_PORT" "$OPENVPN_CIDR" "$SERVER_IFACE"
+setup_firewall "$OPENVPN_PROTO" "$OPENVPN_PORT" "$OPENVPN_CIDR" "$SERVER_IFACE" "$SERVER_IP"
 
 # Save installer state variables
 VARS_FILE="/etc/openvpn/installer-vars.conf"
