@@ -102,7 +102,7 @@ detect_network() {
                 curl -s4 --max-time 5 https://api.ipify.org || \
                 curl -s4 --max-time 5 https://icanhazip.com || true)
 
-    if [[ -z "$PUBLIC_IP" && -n "$PUBLIC_IFACE" ]]; then
+    if [[ -z "$PUBLIC_IP" && -n "${PUBLIC_IFACE:-}" ]]; then
         PUBLIC_IP=$(ip -4 addr show "$PUBLIC_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || true)
     fi
 }
@@ -144,18 +144,100 @@ is_valid_cidr() {
 # Sanitize Username / Client Name
 sanitize_name() {
     local name="$1"
-    # Allow alphanumeric, underscores, hyphens
     echo "$name" | sed 's/[^a-zA-Z0-9_-]/_/g'
 }
 
-# Load OpenVPN Installer Config Vars if present
+# Check if OpenVPN Server is installed on the system
+is_installed() {
+    # 1. Primary check: installer configuration file
+    if [[ -f "/etc/openvpn/installer-vars.conf" ]]; then
+        return 0
+    fi
+
+    # 2. Server configuration file check
+    if [[ -f "/etc/openvpn/server/server.conf" || -f "/etc/openvpn/server.conf" ]]; then
+        return 0
+    fi
+
+    # 3. Active systemd service check
+    if systemctl is-active --quiet openvpn-server@server 2>/dev/null || \
+       systemctl is-active --quiet openvpn@server 2>/dev/null || \
+       systemctl is-active --quiet openvpn 2>/dev/null; then
+        return 0
+    fi
+
+    # 4. Installed binary + server config directory check
+    if command -v openvpn &>/dev/null && [[ -d "/etc/openvpn/server" || -d "/etc/openvpn/easy-rsa" ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Load OpenVPN Installer Config Vars (with auto-reconstruction fallback)
 load_installer_vars() {
     VARS_FILE="/etc/openvpn/installer-vars.conf"
+    
     if [[ -f "$VARS_FILE" ]]; then
-        # Source the configuration variables safely
         source "$VARS_FILE"
         return 0
-    else
-        return 1
     fi
+
+    # If installer-vars.conf is missing but server.conf exists, reconstruct vars
+    local conf=""
+    if [[ -f "/etc/openvpn/server/server.conf" ]]; then
+        conf="/etc/openvpn/server/server.conf"
+    elif [[ -f "/etc/openvpn/server.conf" ]]; then
+        conf="/etc/openvpn/server.conf"
+    fi
+
+    if [[ -n "$conf" ]]; then
+        detect_network
+        PUBLIC_IP="${PUBLIC_IP:-127.0.0.1}"
+        PUBLIC_IFACE="${PUBLIC_IFACE:-eth0}"
+        OPENVPN_PORT=$(grep -E '^port ' "$conf" | awk '{print $2}' | head -n1 || echo "1194")
+        OPENVPN_PROTO=$(grep -E '^proto ' "$conf" | awk '{print $2}' | head -n1 || echo "udp")
+        
+        local server_line
+        server_line=$(grep -E '^server ' "$conf" | head -n1 || true)
+        if [[ -n "$server_line" ]]; then
+            OPENVPN_SUBNET=$(echo "$server_line" | awk '{print $2}')
+            OPENVPN_NETMASK=$(echo "$server_line" | awk '{print $3}')
+        else
+            OPENVPN_SUBNET="10.8.0.0"
+            OPENVPN_NETMASK="255.255.255.0"
+        fi
+        
+        OPENVPN_CIDR="${OPENVPN_SUBNET}/24"
+        DNS_1=$(grep -E 'dhcp-option DNS' "$conf" | head -n1 | awk '{print $3}' || echo "1.1.1.1")
+        DNS_2=$(grep -E 'dhcp-option DNS' "$conf" | sed -n '2p' | awk '{print $3}' || echo "1.0.0.1")
+        CIPHER=$(grep -E '^cipher ' "$conf" | awk '{print $2}' | head -n1 || echo "AES-256-GCM")
+        CERT_TYPE="ec"
+        EASYRSA_DIR="/etc/openvpn/easy-rsa"
+        PKI_DIR="/etc/openvpn/easy-rsa/pki"
+        CLIENT_DIR="/etc/openvpn/client-profiles"
+
+        # Auto-create the installer-vars.conf file for future script executions
+        mkdir -p /etc/openvpn
+        cat <<EOF > "$VARS_FILE"
+PUBLIC_IP="${PUBLIC_IP}"
+PUBLIC_IFACE="${PUBLIC_IFACE}"
+OPENVPN_PROTO="${OPENVPN_PROTO}"
+OPENVPN_PORT="${OPENVPN_PORT}"
+OPENVPN_CIDR="${OPENVPN_CIDR}"
+OPENVPN_SUBNET="${OPENVPN_SUBNET}"
+OPENVPN_NETMASK="${OPENVPN_NETMASK}"
+DNS_1="${DNS_1}"
+DNS_2="${DNS_2}"
+CIPHER="${CIPHER}"
+CERT_TYPE="${CERT_TYPE}"
+EASYRSA_DIR="${EASYRSA_DIR}"
+PKI_DIR="${PKI_DIR}"
+CLIENT_DIR="${CLIENT_DIR}"
+EOF
+        source "$VARS_FILE"
+        return 0
+    fi
+
+    return 1
 }

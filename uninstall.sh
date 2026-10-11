@@ -14,17 +14,14 @@ detect_os
 
 msg_section "OpenVPN Server Uninstallation Wizard"
 
-if ! load_installer_vars 2>/dev/null; then
-    msg_warn "OpenVPN installer configuration /etc/openvpn/installer-vars.conf was not found."
+if ! is_installed; then
+    msg_warn "OpenVPN installation was not detected on this server."
     read -rp "Are you sure you want to attempt manual cleanup of OpenVPN? [y/N]: " confirm_manual
     if [[ ! "$confirm_manual" =~ ^[Yy]$ ]]; then
         exit 0
     fi
-    PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
-    OPENVPN_PROTO="udp"
-    OPENVPN_PORT="1194"
-    OPENVPN_CIDR="10.8.0.0/24"
 fi
+load_installer_vars 2>/dev/null || true
 
 echo -e "${RED}${BOLD}WARNING: This action will stop OpenVPN server, remove firewall rules, and delete all client profiles and CA keys!${NC}"
 read -rp "Do you want to proceed with uninstallation? [y/N]: " confirm_uninstall

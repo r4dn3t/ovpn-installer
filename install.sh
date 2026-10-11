@@ -18,8 +18,8 @@ msg_section "OpenVPN Server Installation Wizard"
 echo -e "Target OS Detected: ${BOLD}${OS_NAME}${NC} (Family: ${OS_FAMILY})"
 
 # Check if OpenVPN is already installed
-if load_installer_vars 2>/dev/null; then
-    msg_warn "OpenVPN installer configuration already exists at /etc/openvpn/installer-vars.conf!"
+if is_installed; then
+    msg_warn "OpenVPN server is already installed on this system!"
     echo -e "If you want to reinstall, please run ${BOLD}./uninstall.sh${NC} first."
     exit 1
 fi

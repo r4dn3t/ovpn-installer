@@ -12,8 +12,9 @@ check_root
 detect_os
 
 # Check installation status
-if load_installer_vars 2>/dev/null; then
+if is_installed; then
     IS_INSTALLED=true
+    load_installer_vars 2>/dev/null || true
 else
     IS_INSTALLED=false
 fi
@@ -35,9 +36,9 @@ fi
 # Main Menu Loop for Installed Server Management
 while true; do
     msg_section "OpenVPN Control Center"
-    echo -e "Server Public IP : ${CYAN}${PUBLIC_IP}${NC}"
-    echo -e "Port / Protocol  : ${CYAN}${OPENVPN_PORT} / ${OPENVPN_PROTO}${NC}"
-    echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR}${NC}\n"
+    echo -e "Server Public IP : ${CYAN}${PUBLIC_IP:-Unknown}${NC}"
+    echo -e "Port / Protocol  : ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
+    echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}\n"
 
     echo "   1) User Management (Add, Revoke, List, Export Profiles)"
     echo "   2) Create a New User Profile"

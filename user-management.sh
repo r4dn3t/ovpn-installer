@@ -11,11 +11,12 @@ source "${SCRIPT_DIR}/lib/templates.sh"
 
 check_root
 
-if ! load_installer_vars 2>/dev/null; then
-    msg_error "OpenVPN installer configuration (/etc/openvpn/installer-vars.conf) not found."
+if ! is_installed; then
+    msg_error "OpenVPN installation was not detected on this server."
     msg_error "Please run ./install.sh first to set up the OpenVPN server."
     exit 1
 fi
+load_installer_vars 2>/dev/null || true
 
 EASYRSA_DIR="${EASYRSA_DIR:-/etc/openvpn/easy-rsa}"
 PKI_DIR="${PKI_DIR:-${EASYRSA_DIR}/pki}"
