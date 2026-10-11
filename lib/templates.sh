@@ -83,6 +83,13 @@ generate_mikrotik_config() {
     # Also generate a standard .ovpn file for RouterOS v7 import
     generate_standard_ovpn "$client_name" "$server_ip" "$port" "$proto" "$cipher" "${output_dir}/${client_name}.ovpn" "$pki_dir"
 
+    # Map cipher to valid MikroTik RouterOS cipher name (aes256 or aes128)
+    local mikrotik_cipher="aes256"
+    case "$cipher" in
+        *128*) mikrotik_cipher="aes128" ;;
+        *)     mikrotik_cipher="aes256" ;;
+    esac
+
     # Generate RouterOS Import & Setup CLI Commands script
     cat <<EOF > "${output_dir}/mikrotik_setup.rsc"
 # ==============================================================================
@@ -96,19 +103,22 @@ generate_mikrotik_config() {
 /certificate import file-name=${client_name}.crt passphrase=""
 /certificate import file-name=${client_name}.key passphrase=""
 
-# Step B: Create OpenVPN Client Interface (RouterOS v6 / v7)
+# Step B: Create OpenVPN Client Interface (RouterOS v7)
 /interface ovpn-client add name="ovpn-${client_name}" \
     connect-to="${server_ip}" \
     port=${port} \
     mode=ip \
     user="${client_name}" \
-    password="YOUR_PASSWORD_IF_PASSWORD_AUTH_ENABLED" \
+    password="" \
     profile=default-encryption \
     certificate=${client_name}.crt_0 \
     auth=sha256 \
-    cipher=${cipher} \
+    cipher=${mikrotik_cipher} \
     add-default-route=yes \
     disabled=no
+
+# Alternative for RouterOS v6 (requires auth=sha1 and TCP):
+# /interface ovpn-client add name="ovpn-${client_name}" connect-to="${server_ip}" port=${port} mode=ip user="${client_name}" certificate=${client_name}.crt_0 auth=sha1 cipher=${mikrotik_cipher} add-default-route=yes disabled=no
 
 # Step C: Firewall NAT for LAN Clients behind MikroTik
 /ip firewall nat add chain=srcnat out-interface="ovpn-${client_name}" action=masquerade comment="OpenVPN Outbound NAT"
@@ -162,6 +172,12 @@ print_device_guidelines() {
             ;;
 
         mikrotik|routeros)
+            local mikrotik_cipher="aes256"
+            case "${CIPHER:-AES-256-GCM}" in
+                *128*) mikrotik_cipher="aes128" ;;
+                *)     mikrotik_cipher="aes256" ;;
+            esac
+
             echo -e "${BOLD}${CYAN}----------------------------------------------------------------------${NC}"
             echo -e "${BOLD}🔌 SETUP GUIDELINES FOR MIKROTIK ROUTEROS:${NC}"
             echo -e "${BOLD}${CYAN}----------------------------------------------------------------------${NC}"
@@ -175,8 +191,10 @@ print_device_guidelines() {
             echo -e "    ${CYAN}/certificate import file-name=ca.crt passphrase=\"\"${NC}"
             echo -e "    ${CYAN}/certificate import file-name=${client_name}.crt passphrase=\"\"${NC}"
             echo -e "    ${CYAN}/certificate import file-name=${client_name}.key passphrase=\"\"${NC}"
-            echo -e " 4. Add OpenVPN client interface:"
-            echo -e "    ${CYAN}/interface ovpn-client add name=\"ovpn-${client_name}\" connect-to=\"SERVER_IP\" port=1194 mode=ip user=\"${client_name}\" certificate=${client_name}.crt_0 cipher=aes256-sha1 add-default-route=yes disabled=no${NC}"
+            echo -e " 4. Add OpenVPN client interface (RouterOS v7):"
+            echo -e "    ${GREEN}/interface ovpn-client add name=\"ovpn-${client_name}\" connect-to=\"${PUBLIC_IP:-SERVER_IP}\" port=${OPENVPN_PORT:-1194} mode=ip user=\"${client_name}\" certificate=${client_name}.crt_0 auth=sha256 cipher=${mikrotik_cipher} add-default-route=yes disabled=no${NC}"
+            echo -e " 5. Alternative for RouterOS v6 (requires auth=sha1):"
+            echo -e "    ${CYAN}/interface ovpn-client add name=\"ovpn-${client_name}\" connect-to=\"${PUBLIC_IP:-SERVER_IP}\" port=${OPENVPN_PORT:-1194} mode=ip user=\"${client_name}\" certificate=${client_name}.crt_0 auth=sha1 cipher=${mikrotik_cipher} add-default-route=yes disabled=no${NC}"
             echo -e " Note: On RouterOS v6, ensure OpenVPN Server protocol is set to TCP."
             echo -e " Note: On RouterOS v7, both UDP and TCP protocols are supported."
             echo -e "${BOLD}${CYAN}----------------------------------------------------------------------${NC}\n"

@@ -263,6 +263,8 @@ cat <<EOF >> "$CONF_FILE"
 keepalive 10 120
 tls-crypt /etc/openvpn/tls-crypt.key
 cipher ${CIPHER}
+data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-256-CBC:AES-128-CBC
+data-ciphers-fallback AES-256-CBC
 auth SHA256
 user nobody
 group nobody

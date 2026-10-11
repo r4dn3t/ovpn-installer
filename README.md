@@ -114,7 +114,7 @@ When a user is created with target device **MikroTik RouterOS**, files are gener
     user="username" \
     certificate=client.crt_0 \
     auth=sha256 \
-    cipher=aes256-sha1 \
+    cipher=aes256 \
     add-default-route=yes \
     disabled=no
 ```
