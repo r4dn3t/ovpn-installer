@@ -55,10 +55,11 @@ while true; do
     echo "   2) Create a New User Profile"
     echo "   3) Display Installation Directories & Generated Profiles (Detail Info)"
     echo "   4) Toggle MikroTik Compatibility (Enable/Disable tls-crypt)"
-    echo "   5) Check OpenVPN Service Status & Active Connections"
-    echo "   6) Uninstall OpenVPN Server"
-    echo "   7) Exit"
-    read -rp "Select an option [1-7]: " main_choice
+    echo "   5) Run Server Diagnostics & Repair Configuration"
+    echo "   6) Check OpenVPN Service Status & Active Connections"
+    echo "   7) Uninstall OpenVPN Server"
+    echo "   8) Exit"
+    read -rp "Select an option [1-8]: " main_choice
 
     case "$main_choice" in
         1)
@@ -90,6 +91,11 @@ while true; do
             read -rp "Press Enter to return to main menu..."
             ;;
         5)
+            msg_section "Server Diagnostics & Configuration Repair"
+            repair_server_config
+            read -rp "Press Enter to return to main menu..."
+            ;;
+        6)
             msg_section "OpenVPN Service & Active Connections"
             systemctl status openvpn-server@server --no-pager 2>/dev/null || systemctl status openvpn@server --no-pager 2>/dev/null || true
             if [[ -f /var/log/openvpn/openvpn-status.log ]]; then
@@ -99,15 +105,15 @@ while true; do
             echo ""
             read -rp "Press Enter to return to main menu..."
             ;;
-        6)
+        7)
             "${SCRIPT_DIR}/uninstall.sh"
             exit 0
             ;;
-        7)
+        8)
             exit 0
             ;;
         *)
-            msg_warn "Invalid option. Please select 1-7."
+            msg_warn "Invalid option. Please select 1-8."
             ;;
     esac
 done

@@ -377,10 +377,16 @@ get_openvpn_group() {
     fi
 }
 
-# Auto-repair common configuration errors (group nobody on Debian/Ubuntu, explicit-exit-notify on TCP)
+# Auto-repair common configuration errors and restore running service
 repair_server_config() {
-    local conf="/etc/openvpn/server/server.conf"
-    [[ -f "$conf" ]] || return 0
+    local conf=""
+    if [[ -f "/etc/openvpn/server/server.conf" ]]; then
+        conf="/etc/openvpn/server/server.conf"
+    elif [[ -f "/etc/openvpn/server.conf" ]]; then
+        conf="/etc/openvpn/server.conf"
+    fi
+
+    [[ -n "$conf" ]] || return 0
 
     local changed=false
     local proper_group
@@ -389,18 +395,48 @@ repair_server_config() {
     # 1. Fix unprivileged group (e.g. group nobody -> group nogroup on Debian/Ubuntu)
     if grep -qE '^group nobody' "$conf" && [[ "$proper_group" == "nogroup" ]]; then
         sed -i 's/^group nobody/group nogroup/' "$conf"
+        msg_success "Auto-repaired group directive (nobody -> nogroup) in server.conf"
         changed=true
     fi
 
     # 2. Fix explicit-exit-notify if protocol is TCP
     if grep -qE '^proto tcp' "$conf" && grep -qE '^explicit-exit-notify' "$conf"; then
         sed -i '/^explicit-exit-notify/d' "$conf"
+        msg_success "Auto-repaired: removed explicit-exit-notify directive from TCP server.conf"
         changed=true
     fi
 
-    if [[ "$changed" == true ]]; then
-        msg_info "Auto-repaired server configuration compatibility settings..."
-        systemctl restart openvpn-server@server &>/dev/null || systemctl restart openvpn@server &>/dev/null || true
+    # 3. Ensure data-ciphers and data-ciphers-fallback exist for modern and legacy clients (e.g. MikroTik)
+    if ! grep -qE '^data-ciphers ' "$conf"; then
+        if grep -qE '^cipher ' "$conf"; then
+            sed -i '/^cipher /a data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-256-CBC:AES-128-CBC\ndata-ciphers-fallback AES-256-CBC' "$conf"
+            msg_success "Auto-repaired: added data-ciphers fallback negotiation to server.conf"
+            changed=true
+        fi
+    fi
+
+    # 4. Ensure IPv4 forwarding is active in kernel
+    if [[ $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null) != "1" ]]; then
+        echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+        mkdir -p /etc/sysctl.d
+        echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-openvpn.conf
+        sysctl --system &>/dev/null || true
+        msg_success "Auto-repaired: enabled net.ipv4.ip_forward=1 in kernel sysctl"
+    fi
+
+    # 5. Service health check: start/restart if modified or currently failed
+    local srv="openvpn-server@server"
+    if ! systemctl list-unit-files | grep -q openvpn-server@; then
+        srv="openvpn@server"
+    fi
+
+    if [[ "$changed" == true ]] || ! systemctl is-active --quiet "$srv" 2>/dev/null; then
+        msg_info "Restarting OpenVPN service (${srv}) with repaired configuration..."
+        systemctl daemon-reload
+        systemctl restart "$srv" &>/dev/null || systemctl start "$srv" &>/dev/null || true
+        if systemctl is-active --quiet "$srv" 2>/dev/null; then
+            msg_success "OpenVPN server (${srv}) is now active and running healthy!"
+        fi
     fi
 }
 
