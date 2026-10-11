@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/firewall.sh"
 
 check_root
 detect_os
@@ -16,6 +17,8 @@ if is_installed; then
     IS_INSTALLED=true
     repair_server_config
     load_installer_vars 2>/dev/null || true
+    apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}"
+    create_persistent_firewall_script "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" 2>/dev/null || true
 else
     IS_INSTALLED=false
 fi
@@ -93,6 +96,9 @@ while true; do
         5)
             msg_section "Server Diagnostics & Configuration Repair"
             repair_server_config
+            apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}"
+            create_persistent_firewall_script "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" 2>/dev/null || true
+            msg_success "Firewall NAT & Docker forwarding rules applied and persisted via openvpn-iptables.service."
             read -rp "Press Enter to return to main menu..."
             ;;
         6)
