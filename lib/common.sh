@@ -200,7 +200,7 @@ is_installed() {
     return 1
 }
 
-# Load OpenVPN Installer Config Vars (with auto-reconstruction & IP sanitization)
+# Load OpenVPN Installer Config Vars (with auto-reconstruction & default fallbacks)
 load_installer_vars() {
     VARS_FILE="/etc/openvpn/installer-vars.conf"
     
@@ -211,44 +211,42 @@ load_installer_vars() {
             detect_network
             sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=\"${PUBLIC_IP}\"|" "$VARS_FILE" 2>/dev/null || true
         fi
-        return 0
-    fi
-
-    # If installer-vars.conf is missing but server.conf exists, reconstruct vars
-    local conf=""
-    if [[ -f "/etc/openvpn/server/server.conf" ]]; then
-        conf="/etc/openvpn/server/server.conf"
-    elif [[ -f "/etc/openvpn/server.conf" ]]; then
-        conf="/etc/openvpn/server.conf"
-    fi
-
-    if [[ -n "$conf" ]]; then
-        detect_network
-        OPENVPN_PORT=$(grep -E '^port ' "$conf" | awk '{print $2}' | head -n1 || echo "1194")
-        OPENVPN_PROTO=$(grep -E '^proto ' "$conf" | awk '{print $2}' | head -n1 || echo "udp")
-        
-        local server_line
-        server_line=$(grep -E '^server ' "$conf" | head -n1 || true)
-        if [[ -n "$server_line" ]]; then
-            OPENVPN_SUBNET=$(echo "$server_line" | awk '{print $2}')
-            OPENVPN_NETMASK=$(echo "$server_line" | awk '{print $3}')
-        else
-            OPENVPN_SUBNET="10.8.0.0"
-            OPENVPN_NETMASK="255.255.255.0"
+    else
+        # If installer-vars.conf is missing but server.conf exists, reconstruct vars
+        local conf=""
+        if [[ -f "/etc/openvpn/server/server.conf" ]]; then
+            conf="/etc/openvpn/server/server.conf"
+        elif [[ -f "/etc/openvpn/server.conf" ]]; then
+            conf="/etc/openvpn/server.conf"
         fi
-        
-        OPENVPN_CIDR="${OPENVPN_SUBNET}/24"
-        DNS_1=$(grep -E 'dhcp-option DNS' "$conf" | head -n1 | awk '{print $3}' || echo "1.1.1.1")
-        DNS_2=$(grep -E 'dhcp-option DNS' "$conf" | sed -n '2p' | awk '{print $3}' || echo "1.0.0.1")
-        CIPHER=$(grep -E '^cipher ' "$conf" | awk '{print $2}' | head -n1 || echo "AES-256-GCM")
-        CERT_TYPE="ec"
-        EASYRSA_DIR="/etc/openvpn/easy-rsa"
-        PKI_DIR="/etc/openvpn/easy-rsa/pki"
-        CLIENT_DIR="/etc/openvpn/client-profiles"
 
-        # Auto-create the installer-vars.conf file for future script executions
-        mkdir -p /etc/openvpn
-        cat <<EOF > "$VARS_FILE"
+        if [[ -n "$conf" ]]; then
+            detect_network
+            OPENVPN_PORT=$(grep -E '^port ' "$conf" | awk '{print $2}' | head -n1 || echo "1194")
+            OPENVPN_PROTO=$(grep -E '^proto ' "$conf" | awk '{print $2}' | head -n1 || echo "udp")
+            
+            local server_line
+            server_line=$(grep -E '^server ' "$conf" | head -n1 || true)
+            if [[ -n "$server_line" ]]; then
+                OPENVPN_SUBNET=$(echo "$server_line" | awk '{print $2}')
+                OPENVPN_NETMASK=$(echo "$server_line" | awk '{print $3}')
+            else
+                OPENVPN_SUBNET="10.8.0.0"
+                OPENVPN_NETMASK="255.255.255.0"
+            fi
+            
+            OPENVPN_CIDR="${OPENVPN_SUBNET}/24"
+            DNS_1=$(grep -E 'dhcp-option DNS' "$conf" | head -n1 | awk '{print $3}' || echo "1.1.1.1")
+            DNS_2=$(grep -E 'dhcp-option DNS' "$conf" | sed -n '2p' | awk '{print $3}' || echo "1.0.0.1")
+            CIPHER=$(grep -E '^cipher ' "$conf" | awk '{print $2}' | head -n1 || echo "AES-256-GCM")
+            CERT_TYPE="ec"
+            EASYRSA_DIR="/etc/openvpn/easy-rsa"
+            PKI_DIR="/etc/openvpn/easy-rsa/pki"
+            CLIENT_DIR="/etc/openvpn/client-profiles"
+
+            # Auto-create the installer-vars.conf file for future script executions
+            mkdir -p /etc/openvpn
+            cat <<EOF > "$VARS_FILE"
 PUBLIC_IP="${PUBLIC_IP}"
 PUBLIC_IFACE="${PUBLIC_IFACE}"
 OPENVPN_PROTO="${OPENVPN_PROTO}"
@@ -264,11 +262,27 @@ EASYRSA_DIR="${EASYRSA_DIR}"
 PKI_DIR="${PKI_DIR}"
 CLIENT_DIR="${CLIENT_DIR}"
 EOF
-        source "$VARS_FILE"
-        return 0
+            source "$VARS_FILE"
+        fi
     fi
 
-    return 1
+    # Set robust default fallbacks for ALL installer variables to ensure set -u never fails
+    PUBLIC_IP="${PUBLIC_IP:-127.0.0.1}"
+    PUBLIC_IFACE="${PUBLIC_IFACE:-eth0}"
+    OPENVPN_PROTO="${OPENVPN_PROTO:-udp}"
+    OPENVPN_PORT="${OPENVPN_PORT:-1194}"
+    OPENVPN_CIDR="${OPENVPN_CIDR:-10.8.0.0/24}"
+    OPENVPN_SUBNET="${OPENVPN_SUBNET:-10.8.0.0}"
+    OPENVPN_NETMASK="${OPENVPN_NETMASK:-255.255.255.0}"
+    DNS_1="${DNS_1:-1.1.1.1}"
+    DNS_2="${DNS_2:-1.0.0.1}"
+    CIPHER="${CIPHER:-AES-256-GCM}"
+    CERT_TYPE="${CERT_TYPE:-ec}"
+    EASYRSA_DIR="${EASYRSA_DIR:-/etc/openvpn/easy-rsa}"
+    PKI_DIR="${PKI_DIR:-${EASYRSA_DIR}/pki}"
+    CLIENT_DIR="${CLIENT_DIR:-/etc/openvpn/client-profiles}"
+
+    return 0
 }
 
 # Display Detailed System Paths, Folders and Generated Profiles Info

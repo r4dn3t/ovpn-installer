@@ -87,10 +87,10 @@ add_client() {
 
     if [[ "$device_type" == "mikrotik" ]]; then
         local mikrotik_dir="${CLIENT_DIR}/${CLIENT_NAME}_mikrotik"
-        generate_mikrotik_config "$CLIENT_NAME" "$PUBLIC_IP" "$OPENVPN_PORT" "$OPENVPN_PROTO" "$CIPHER" "$mikrotik_dir" "$PKI_DIR"
+        generate_mikrotik_config "$CLIENT_NAME" "${PUBLIC_IP:-127.0.0.1}" "${OPENVPN_PORT:-1194}" "${OPENVPN_PROTO:-udp}" "${CIPHER:-AES-256-GCM}" "$mikrotik_dir" "$PKI_DIR"
         ovpn_path="${mikrotik_dir}/${CLIENT_NAME}.ovpn"
     else
-        generate_standard_ovpn "$CLIENT_NAME" "$PUBLIC_IP" "$OPENVPN_PORT" "$OPENVPN_PROTO" "$CIPHER" "$ovpn_path" "$PKI_DIR"
+        generate_standard_ovpn "$CLIENT_NAME" "${PUBLIC_IP:-127.0.0.1}" "${OPENVPN_PORT:-1194}" "${OPENVPN_PROTO:-udp}" "${CIPHER:-AES-256-GCM}" "$ovpn_path" "$PKI_DIR"
     fi
 
     msg_section "User Profile Created Successfully!"
