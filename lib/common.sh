@@ -89,27 +89,9 @@ detect_os() {
     esac
 }
 
-# Detect Default Network Interface & Public IP via api.ipify.org
-detect_network() {
-    # Default public interface
-    PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
-    if [[ -z "$PUBLIC_IFACE" ]]; then
-        PUBLIC_IFACE=$(ip link show | grep -v "lo:" | awk -F': ' '$2!="" {print $2}' | head -n1)
-    fi
-
-    # Public IPv4 detection using api.ipify.org (with fallbacks)
-    PUBLIC_IP=$(curl -s4 --max-time 5 https://api.ipify.org || \
-                curl -s4 --max-time 5 https://ifconfig.me || \
-                curl -s4 --max-time 5 https://icanhazip.com || true)
-
-    if [[ -z "$PUBLIC_IP" && -n "${PUBLIC_IFACE:-}" ]]; then
-        PUBLIC_IP=$(ip -4 addr show "$PUBLIC_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || true)
-    fi
-}
-
 # IP Address Validation
 is_valid_ip() {
-    local ip="$1"
+    local ip="${1:-}"
     local rx='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
     if [[ $ip =~ $rx ]]; then
         local IFS='.'
@@ -122,7 +104,7 @@ is_valid_ip() {
 
 # Port Number Validation
 is_valid_port() {
-    local port="$1"
+    local port="${1:-}"
     if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
         return 0
     fi
@@ -131,7 +113,7 @@ is_valid_port() {
 
 # CIDR Subnet Validation
 is_valid_cidr() {
-    local cidr="$1"
+    local cidr="${1:-}"
     local rx='^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$'
     if [[ $cidr =~ $rx ]]; then
         local ip="${cidr%/*}"
@@ -145,6 +127,50 @@ is_valid_cidr() {
 sanitize_name() {
     local name="$1"
     echo "$name" | sed 's/[^a-zA-Z0-9_-]/_/g'
+}
+
+# Detect Default Network Interface & Public IP via api.ipify.org with IP regex validation
+detect_network() {
+    # Default public interface
+    PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+    if [[ -z "$PUBLIC_IFACE" ]]; then
+        PUBLIC_IFACE=$(ip link show | grep -v "lo:" | awk -F': ' '$2!="" {print $2}' | head -n1)
+    fi
+
+    PUBLIC_IP=""
+    local endpoints=(
+        "https://api.ipify.org"
+        "https://ifconfig.me"
+        "https://icanhazip.com"
+        "https://api4.ipify.org"
+        "https://ipinfo.io/ip"
+    )
+
+    for url in "${endpoints[@]}"; do
+        local raw_res
+        raw_res=$(curl -s4 --fail --max-time 4 "$url" 2>/dev/null || true)
+        # Extract only valid IPv4 pattern, ignoring HTML/error tags
+        local extracted_ip
+        extracted_ip=$(echo "$raw_res" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 || true)
+        if is_valid_ip "$extracted_ip"; then
+            PUBLIC_IP="$extracted_ip"
+            break
+        fi
+    done
+
+    # Fallback to local interface IP if external services fail or return HTML
+    if ! is_valid_ip "${PUBLIC_IP:-}" && [[ -n "${PUBLIC_IFACE:-}" ]]; then
+        local iface_ip
+        iface_ip=$(ip -4 addr show "$PUBLIC_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || true)
+        if is_valid_ip "$iface_ip"; then
+            PUBLIC_IP="$iface_ip"
+        fi
+    fi
+
+    # Final fallback if no valid IP detected
+    if ! is_valid_ip "${PUBLIC_IP:-}"; then
+        PUBLIC_IP="127.0.0.1"
+    fi
 }
 
 # Check if OpenVPN Server is installed on the system
@@ -174,12 +200,17 @@ is_installed() {
     return 1
 }
 
-# Load OpenVPN Installer Config Vars (with auto-reconstruction fallback)
+# Load OpenVPN Installer Config Vars (with auto-reconstruction & IP sanitization)
 load_installer_vars() {
     VARS_FILE="/etc/openvpn/installer-vars.conf"
     
     if [[ -f "$VARS_FILE" ]]; then
         source "$VARS_FILE"
+        # Validate sourced PUBLIC_IP - if invalid (e.g. contains HTML tags), re-detect & sanitize VARS_FILE
+        if ! is_valid_ip "${PUBLIC_IP:-}"; then
+            detect_network
+            sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=\"${PUBLIC_IP}\"|" "$VARS_FILE" 2>/dev/null || true
+        fi
         return 0
     fi
 
@@ -193,8 +224,6 @@ load_installer_vars() {
 
     if [[ -n "$conf" ]]; then
         detect_network
-        PUBLIC_IP="${PUBLIC_IP:-127.0.0.1}"
-        PUBLIC_IFACE="${PUBLIC_IFACE:-eth0}"
         OPENVPN_PORT=$(grep -E '^port ' "$conf" | awk '{print $2}' | head -n1 || echo "1194")
         OPENVPN_PROTO=$(grep -E '^proto ' "$conf" | awk '{print $2}' | head -n1 || echo "udp")
         
