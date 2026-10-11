@@ -89,7 +89,7 @@ detect_os() {
     esac
 }
 
-# Detect Default Network Interface & Public IP
+# Detect Default Network Interface & Public IP via api.ipify.org
 detect_network() {
     # Default public interface
     PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
@@ -97,9 +97,9 @@ detect_network() {
         PUBLIC_IFACE=$(ip link show | grep -v "lo:" | awk -F': ' '$2!="" {print $2}' | head -n1)
     fi
 
-    # Public IPv4 detection using external services with timeout
-    PUBLIC_IP=$(curl -s4 --max-time 5 https://ifconfig.me || \
-                curl -s4 --max-time 5 https://api.ipify.org || \
+    # Public IPv4 detection using api.ipify.org (with fallbacks)
+    PUBLIC_IP=$(curl -s4 --max-time 5 https://api.ipify.org || \
+                curl -s4 --max-time 5 https://ifconfig.me || \
                 curl -s4 --max-time 5 https://icanhazip.com || true)
 
     if [[ -z "$PUBLIC_IP" && -n "${PUBLIC_IFACE:-}" ]]; then
@@ -240,4 +240,85 @@ EOF
     fi
 
     return 1
+}
+
+# Display Detailed System Paths, Folders and Generated Profiles Info
+show_detailed_info() {
+    msg_section "Detailed Installation Directory & Generated Files Overview"
+
+    load_installer_vars 2>/dev/null || true
+
+    echo -e "${BOLD}1. System & Network Variables:${NC}"
+    echo -e "   - Public IP           : ${CYAN}${PUBLIC_IP:-Unknown}${NC}"
+    echo -e "   - Network Interface   : ${CYAN}${PUBLIC_IFACE:-Unknown}${NC}"
+    echo -e "   - OpenVPN Port / Proto: ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
+    echo -e "   - VPN Subnet CIDR     : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}"
+    echo -e "   - Cipher & Cert Type  : ${CYAN}${CIPHER:-AES-256-GCM} (${CERT_TYPE:-ec})${NC}"
+    echo ""
+
+    echo -e "${BOLD}2. Installation Directories Used:${NC}"
+    local dirs=(
+        "/etc/openvpn/server:Server Configuration Directory"
+        "/etc/openvpn/easy-rsa:Easy-RSA Directory"
+        "${PKI_DIR:-/etc/openvpn/easy-rsa/pki}:PKI Certificate Directory"
+        "${CLIENT_DIR:-/etc/openvpn/client-profiles}:Generated Client Profiles Directory"
+        "/var/log/openvpn:Server Log Directory"
+    )
+
+    for entry in "${dirs[@]}"; do
+        local path="${entry%%:*}"
+        local desc="${entry#*:}"
+        if [[ -d "$path" ]]; then
+            echo -e "   - [${GREEN}EXISTS${NC}] ${BOLD}${desc}${NC}: ${path}"
+        else
+            echo -e "   - [${RED}MISSING${NC}] ${BOLD}${desc}${NC}: ${path}"
+        fi
+    done
+    echo ""
+
+    echo -e "${BOLD}3. Key Infrastructure Files Generated:${NC}"
+    local files=(
+        "/etc/openvpn/installer-vars.conf:Installer State Variables"
+        "/etc/openvpn/server/server.conf:Main Server Configuration"
+        "/etc/openvpn/server/ca.crt:Certificate Authority (CA)"
+        "/etc/openvpn/server/server.crt:Server Public Certificate"
+        "/etc/openvpn/server/server.key:Server Private Key"
+        "/etc/openvpn/tls-crypt.key:TLS Crypt Control Channel Key"
+        "/etc/openvpn/server/dh.pem:Diffie-Hellman Parameters"
+        "/etc/openvpn/server/crl.pem:Certificate Revocation List (CRL)"
+        "/etc/sysctl.d/99-openvpn.conf:Kernel IP Forwarding Sysctl Config"
+        "/var/log/openvpn/openvpn.log:Server Log File"
+        "/var/log/openvpn/openvpn-status.log:Active Connection Status Log"
+    )
+
+    for entry in "${files[@]}"; do
+        local path="${entry%%:*}"
+        local desc="${entry#*:}"
+        if [[ -f "$path" ]]; then
+            local size
+            size=$(du -h "$path" 2>/dev/null | cut -f1)
+            echo -e "   - [${GREEN}EXISTS${NC}] ${BOLD}${desc}${NC}"
+            echo -e "     Path: ${YELLOW}${path}${NC} (${size})"
+        else
+            echo -e "   - [${YELLOW}OPTIONAL/NOT GENERATED${NC}] ${desc} (${path})"
+        fi
+    done
+    echo ""
+
+    echo -e "${BOLD}4. Generated Client Profiles & Files:${NC}"
+    local client_path="${CLIENT_DIR:-/etc/openvpn/client-profiles}"
+    if [[ -d "$client_path" ]] && [[ "$(ls -A "$client_path" 2>/dev/null)" ]]; then
+        echo -e "   Location: ${YELLOW}${client_path}${NC}"
+        echo -e "   ----------------------------------------------------------------------"
+        find "$client_path" -maxdepth 2 -type f 2>/dev/null | while read -r f; do
+            local sz
+            sz=$(du -h "$f" 2>/dev/null | cut -f1)
+            local mod
+            mod=$(date -r "$f" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "")
+            echo -e "   - ${CYAN}${f}${NC} (${sz} | ${mod})"
+        done
+    else
+        echo -e "   ${YELLOW}No client profiles generated yet in ${client_path}${NC}"
+    fi
+    echo ""
 }

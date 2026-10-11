@@ -42,10 +42,11 @@ while true; do
 
     echo "   1) User Management (Add, Revoke, List, Export Profiles)"
     echo "   2) Create a New User Profile"
-    echo "   3) Check OpenVPN Service Status & Active Connections"
-    echo "   4) Uninstall OpenVPN Server"
-    echo "   5) Exit"
-    read -rp "Select an option [1-5]: " main_choice
+    echo "   3) Display Installation Directories & Generated Profiles (Detail Info)"
+    echo "   4) Check OpenVPN Service Status & Active Connections"
+    echo "   5) Uninstall OpenVPN Server"
+    echo "   6) Exit"
+    read -rp "Select an option [1-6]: " main_choice
 
     case "$main_choice" in
         1)
@@ -55,6 +56,10 @@ while true; do
             "${SCRIPT_DIR}/user-management.sh" add
             ;;
         3)
+            show_detailed_info
+            read -rp "Press Enter to return to main menu..."
+            ;;
+        4)
             msg_section "OpenVPN Service & Active Connections"
             systemctl status openvpn-server@server --no-pager 2>/dev/null || systemctl status openvpn@server --no-pager 2>/dev/null || true
             if [[ -f /var/log/openvpn/openvpn-status.log ]]; then
@@ -64,15 +69,15 @@ while true; do
             echo ""
             read -rp "Press Enter to return to main menu..."
             ;;
-        4)
+        5)
             "${SCRIPT_DIR}/uninstall.sh"
             exit 0
             ;;
-        5)
+        6)
             exit 0
             ;;
         *)
-            msg_warn "Invalid option. Please select 1-5."
+            msg_warn "Invalid option. Please select 1-6."
             ;;
     esac
 done

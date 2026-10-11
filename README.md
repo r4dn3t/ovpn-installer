@@ -7,6 +7,8 @@ A modular, robust, and secure Bash script suite designed to install, configure, 
 ## 🌟 Key Features
 
 * **Multi-OS Detection & Support**: Automatically detects and configures dependencies on **Debian**, **Ubuntu**, **CentOS Stream**, **RHEL**, **Rocky Linux**, **AlmaLinux**, **Fedora**, and **Arch Linux**.
+* **IP Auto-Detection**: Uses `api.ipify.org` as the primary public IPv4 detection endpoint with automated fallback mechanisms.
+* **Detailed Path & Profile Inspector**: Displays a complete overview of all installation directories, PKI infrastructure keys, configuration files, and generated client `.ovpn` / MikroTik profiles.
 * **Modern Cryptography & Security**: Supports modern Elliptic Curve Cryptography (`prime256v1` / ECDSA) and high-assurance RSA keys (2048/4096-bit), `AES-256-GCM` encryption, and `tls-crypt` packet authentication.
 * **Flexible Networking**: Customize network interface, public IP / domain name, VPN CIDR IP range (e.g. `10.8.0.0/24`), protocol (UDP / TCP), custom port (default `1194`), and DNS resolvers (Cloudflare, Google, Quad9, OpenDNS, or Custom).
 * **Automated Firewall NAT Configuration**: Seamless integration with **iptables**, **UFW**, and **firewalld**, with kernel IPv4 packet forwarding auto-configuration.
