@@ -49,7 +49,7 @@ $(cat "$client_key")
 </key>
 EOF
 
-    if [[ -f "$tls_key" ]]; then
+    if [[ -f "$tls_key" ]] && grep -qE '^tls-crypt' /etc/openvpn/server/server.conf 2>/dev/null; then
         cat <<EOF >> "$output_path"
 <tls-crypt>
 $(cat "$tls_key")

@@ -158,6 +158,16 @@ case "$route_choice" in
     *) REDIRECT_GATEWAY="1" ;;
 esac
 
+# 9. Hardware Router (MikroTik RouterOS) Support
+echo -e "\n${BOLD}9. Hardware Router (MikroTik RouterOS) Compatibility:${NC}"
+echo "   1) Yes (Standard TLS - compatible with MikroTik routers, iOS, macOS, Windows, Android, Linux) [Recommended]"
+echo "   2) No  (Enable tls-crypt - extra obfuscation, but incompatible with MikroTik)"
+read -rp "   Enable MikroTik router support? [1-2, default 1]: " mikrotik_compat
+case "$mikrotik_compat" in
+    2) USE_TLS_CRYPT="1" ;;
+    *) USE_TLS_CRYPT="0" ;;
+esac
+
 msg_info "Configuration choices collected."
 
 # ==============================================================================
@@ -259,22 +269,33 @@ if [[ "$REDIRECT_GATEWAY" == "1" ]]; then
     echo 'push "redirect-gateway def1 bypass-dhcp"' >> "$CONF_FILE"
 fi
 
+OPENVPN_GROUP=$(get_openvpn_group)
+
 cat <<EOF >> "$CONF_FILE"
 keepalive 10 120
-tls-crypt /etc/openvpn/tls-crypt.key
+EOF
+
+if [[ "$USE_TLS_CRYPT" == "1" ]]; then
+    echo "tls-crypt /etc/openvpn/tls-crypt.key" >> "$CONF_FILE"
+fi
+
+cat <<EOF >> "$CONF_FILE"
 cipher ${CIPHER}
 data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-256-CBC:AES-128-CBC
 data-ciphers-fallback AES-256-CBC
 auth SHA256
 user nobody
-group nobody
+group ${OPENVPN_GROUP}
 persist-key
 persist-tun
 status /var/log/openvpn/openvpn-status.log
 log-append /var/log/openvpn/openvpn.log
 verb 3
-explicit-exit-notify 1
 EOF
+
+if [[ "$OPENVPN_PROTO" == "udp" ]]; then
+    echo "explicit-exit-notify 1" >> "$CONF_FILE"
+fi
 
 mkdir -p /var/log/openvpn
 mkdir -p /etc/openvpn/client-profiles
@@ -305,6 +326,7 @@ CERT_TYPE="${CERT_TYPE}"
 EASYRSA_DIR="${EASYRSA_DIR}"
 PKI_DIR="${EASYRSA_DIR}/pki"
 CLIENT_DIR="/etc/openvpn/client-profiles"
+USE_TLS_CRYPT="${USE_TLS_CRYPT}"
 EOF
 
 msg_info "Starting and enabling OpenVPN server systemd service..."

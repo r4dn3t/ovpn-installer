@@ -14,6 +14,7 @@ detect_os
 # Check installation status
 if is_installed; then
     IS_INSTALLED=true
+    repair_server_config
     load_installer_vars 2>/dev/null || true
 else
     IS_INSTALLED=false
@@ -35,18 +36,29 @@ fi
 
 # Main Menu Loop for Installed Server Management
 while true; do
+    CONF_FILE="/etc/openvpn/server/server.conf"
+    local_has_tls_crypt=false
+    if grep -qE '^tls-crypt' "$CONF_FILE" 2>/dev/null; then
+        local_has_tls_crypt=true
+        MIKROTIK_STATUS="${YELLOW}Disabled (tls-crypt active)${NC}"
+    else
+        MIKROTIK_STATUS="${GREEN}Enabled (Standard TLS / MikroTik Ready)${NC}"
+    fi
+
     msg_section "OpenVPN Control Center"
     echo -e "Server Public IP : ${CYAN}${PUBLIC_IP:-Unknown}${NC}"
     echo -e "Port / Protocol  : ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
-    echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}\n"
+    echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}"
+    echo -e "MikroTik Support : ${MIKROTIK_STATUS}\n"
 
     echo "   1) User Management (Add, Revoke, List, Export Profiles)"
     echo "   2) Create a New User Profile"
     echo "   3) Display Installation Directories & Generated Profiles (Detail Info)"
-    echo "   4) Check OpenVPN Service Status & Active Connections"
-    echo "   5) Uninstall OpenVPN Server"
-    echo "   6) Exit"
-    read -rp "Select an option [1-6]: " main_choice
+    echo "   4) Toggle MikroTik Compatibility (Enable/Disable tls-crypt)"
+    echo "   5) Check OpenVPN Service Status & Active Connections"
+    echo "   6) Uninstall OpenVPN Server"
+    echo "   7) Exit"
+    read -rp "Select an option [1-7]: " main_choice
 
     case "$main_choice" in
         1)
@@ -60,6 +72,24 @@ while true; do
             read -rp "Press Enter to return to main menu..."
             ;;
         4)
+            if [[ "$local_has_tls_crypt" == true ]]; then
+                msg_info "Disabling tls-crypt for MikroTik RouterOS compatibility..."
+                sed -i 's/^tls-crypt /#tls-crypt /' "$CONF_FILE"
+                systemctl restart openvpn-server@server &>/dev/null || systemctl restart openvpn@server &>/dev/null || true
+                msg_success "MikroTik Compatibility ENABLED! Standard TLS active."
+            else
+                msg_info "Enabling tls-crypt for maximum security..."
+                if grep -qE '^#tls-crypt' "$CONF_FILE"; then
+                    sed -i 's/^#tls-crypt /tls-crypt /' "$CONF_FILE"
+                else
+                    echo "tls-crypt /etc/openvpn/tls-crypt.key" >> "$CONF_FILE"
+                fi
+                systemctl restart openvpn-server@server &>/dev/null || systemctl restart openvpn@server &>/dev/null || true
+                msg_success "tls-crypt ENABLED! (Note: Hardware routers like MikroTik cannot connect with tls-crypt)."
+            fi
+            read -rp "Press Enter to return to main menu..."
+            ;;
+        5)
             msg_section "OpenVPN Service & Active Connections"
             systemctl status openvpn-server@server --no-pager 2>/dev/null || systemctl status openvpn@server --no-pager 2>/dev/null || true
             if [[ -f /var/log/openvpn/openvpn-status.log ]]; then
@@ -69,15 +99,15 @@ while true; do
             echo ""
             read -rp "Press Enter to return to main menu..."
             ;;
-        5)
+        6)
             "${SCRIPT_DIR}/uninstall.sh"
             exit 0
             ;;
-        6)
+        7)
             exit 0
             ;;
         *)
-            msg_warn "Invalid option. Please select 1-6."
+            msg_warn "Invalid option. Please select 1-7."
             ;;
     esac
 done

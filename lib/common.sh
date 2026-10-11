@@ -365,3 +365,42 @@ show_detailed_info() {
     fi
     echo ""
 }
+
+# Determine appropriate unprivileged group (nogroup on Debian/Ubuntu, nobody on RHEL/Arch)
+get_openvpn_group() {
+    if getent group nogroup &>/dev/null; then
+        echo "nogroup"
+    elif getent group nobody &>/dev/null; then
+        echo "nobody"
+    else
+        echo "nogroup"
+    fi
+}
+
+# Auto-repair common configuration errors (group nobody on Debian/Ubuntu, explicit-exit-notify on TCP)
+repair_server_config() {
+    local conf="/etc/openvpn/server/server.conf"
+    [[ -f "$conf" ]] || return 0
+
+    local changed=false
+    local proper_group
+    proper_group=$(get_openvpn_group)
+
+    # 1. Fix unprivileged group (e.g. group nobody -> group nogroup on Debian/Ubuntu)
+    if grep -qE '^group nobody' "$conf" && [[ "$proper_group" == "nogroup" ]]; then
+        sed -i 's/^group nobody/group nogroup/' "$conf"
+        changed=true
+    fi
+
+    # 2. Fix explicit-exit-notify if protocol is TCP
+    if grep -qE '^proto tcp' "$conf" && grep -qE '^explicit-exit-notify' "$conf"; then
+        sed -i '/^explicit-exit-notify/d' "$conf"
+        changed=true
+    fi
+
+    if [[ "$changed" == true ]]; then
+        msg_info "Auto-repaired server configuration compatibility settings..."
+        systemctl restart openvpn-server@server &>/dev/null || systemctl restart openvpn@server &>/dev/null || true
+    fi
+}
+
