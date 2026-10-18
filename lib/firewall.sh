@@ -62,9 +62,9 @@ flush_openvpn_iptables_rules() {
 
     # Clean all POSTROUTING NAT rules targeting the VPN subnet
     while true; do
-        local rule_num
-        rule_num=$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | grep "$subnet" | head -n1 | awk '{print $1}')
-        if [[ -n "$rule_num" ]]; then
+        local rule_num=""
+        rule_num=$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | awk -v sub="$subnet" '$0 ~ sub {print $1; exit}' || true)
+        if [[ -n "$rule_num" && "$rule_num" =~ ^[0-9]+$ ]]; then
             iptables -t nat -D POSTROUTING "$rule_num" 2>/dev/null || break
         else
             break
@@ -208,9 +208,9 @@ EOF
         fi
 
         while true; do
-            local rule_num
-            rule_num=\$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | grep "${subnet}" | head -n1 | awk '{print \$1}')
-            if [[ -n "\$rule_num" ]]; then
+            local rule_num=""
+            rule_num=\$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | awk -v sub="${subnet}" '\$0 ~ sub {print \$1; exit}' || true)
+            if [[ -n "\$rule_num" && "\$rule_num" =~ ^[0-9]+$ ]]; then
                 iptables -t nat -D POSTROUTING "\$rule_num" 2>/dev/null || break
             else
                 break

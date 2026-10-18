@@ -459,16 +459,31 @@ repair_server_config() {
 
     # 5. Service health check: start/restart if modified or currently failed
     local srv="openvpn-server@server"
-    if ! systemctl list-unit-files | grep -q openvpn-server@; then
+    if systemctl is-active --quiet openvpn-server@server 2>/dev/null; then
+        srv="openvpn-server@server"
+    elif systemctl is-active --quiet openvpn@server 2>/dev/null; then
+        srv="openvpn@server"
+    elif systemctl list-unit-files openvpn-server@.service &>/dev/null; then
+        srv="openvpn-server@server"
+    elif systemctl list-unit-files openvpn@.service &>/dev/null; then
         srv="openvpn@server"
     fi
 
     if [[ "$changed" == true ]] || ! systemctl is-active --quiet "$srv" 2>/dev/null; then
         msg_info "Restarting OpenVPN service (${srv}) with repaired configuration..."
-        systemctl daemon-reload
+        systemctl daemon-reload &>/dev/null || true
         systemctl restart "$srv" &>/dev/null || systemctl start "$srv" &>/dev/null || true
         if systemctl is-active --quiet "$srv" 2>/dev/null; then
             msg_success "OpenVPN server (${srv}) is now active and running healthy!"
+        else
+            local alt_srv="openvpn-server@server"
+            [[ "$srv" == "openvpn-server@server" ]] && alt_srv="openvpn@server"
+            systemctl restart "$alt_srv" &>/dev/null || systemctl start "$alt_srv" &>/dev/null || true
+            if systemctl is-active --quiet "$alt_srv" 2>/dev/null; then
+                msg_success "OpenVPN server (${alt_srv}) is now active and running healthy!"
+            else
+                msg_warn "OpenVPN service (${srv}) status check returned non-zero."
+            fi
         fi
     fi
 }
