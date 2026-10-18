@@ -5,7 +5,11 @@
 
 # Check if OpenVPN forwarding or NAT rules are active in iptables
 is_iptables_active() {
-    local subnet="${1:-${OPENVPN_CIDR:-10.8.0.0/24}}"
+    local subnet="${1:-${OPENVPN_CIDR:-}}"
+    if [[ -z "$subnet" ]]; then
+        detect_vpn_subnet 2>/dev/null || true
+        subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
+    fi
     if iptables -C FORWARD -s "$subnet" -j ACCEPT 2>/dev/null || \
        iptables -t nat -S POSTROUTING 2>/dev/null | grep -q -- "-s ${subnet}"; then
         return 0
@@ -15,7 +19,11 @@ is_iptables_active() {
 
 # Determine the active NAT mode and translation IP in iptables
 get_iptables_nat_mode() {
-    local subnet="${1:-${OPENVPN_CIDR:-10.8.0.0/24}}"
+    local subnet="${1:-${OPENVPN_CIDR:-}}"
+    if [[ -z "$subnet" ]]; then
+        detect_vpn_subnet 2>/dev/null || true
+        subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
+    fi
     local snat_match
     snat_match=$(iptables -t nat -S POSTROUTING 2>/dev/null | grep -- "-s ${subnet}.*-j SNAT" | head -n1 || true)
     if [[ -n "$snat_match" ]]; then
@@ -40,15 +48,22 @@ get_iptables_nat_mode() {
 flush_openvpn_iptables_rules() {
     local proto="${1:-${OPENVPN_PROTO:-udp}}"
     local port="${2:-${OPENVPN_PORT:-1194}}"
-    local subnet="${3:-${OPENVPN_CIDR:-10.8.0.0/24}}"
+    local subnet="${3:-${OPENVPN_CIDR:-}}"
     local iface="${4:-${PUBLIC_IFACE:-}}"
+
+    if [[ -z "$subnet" ]]; then
+        detect_vpn_subnet 2>/dev/null || true
+        subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
+    fi
 
     # Clean INPUT rules for OpenVPN port
     while iptables -D INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; do :; done
 
-    # Clean FORWARD rules
+    # Clean FORWARD rules for active subnet and common default subnets
     while iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
     while iptables -D FORWARD -s "$subnet" -j ACCEPT 2>/dev/null; do :; done
+    [[ "$subnet" != "10.8.0.0/24" ]] && while iptables -D FORWARD -s "10.8.0.0/24" -j ACCEPT 2>/dev/null; do :; done
+    [[ "$subnet" != "10.8.200.0/24" ]] && while iptables -D FORWARD -s "10.8.200.0/24" -j ACCEPT 2>/dev/null; do :; done
     while iptables -D FORWARD -i tun+ -j ACCEPT 2>/dev/null; do :; done
     while iptables -D FORWARD -o tun+ -j ACCEPT 2>/dev/null; do :; done
 
@@ -56,19 +71,27 @@ flush_openvpn_iptables_rules() {
     if iptables -L DOCKER-USER &>/dev/null; then
         while iptables -D DOCKER-USER -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
         while iptables -D DOCKER-USER -s "$subnet" -j ACCEPT 2>/dev/null; do :; done
+        [[ "$subnet" != "10.8.0.0/24" ]] && while iptables -D DOCKER-USER -s "10.8.0.0/24" -j ACCEPT 2>/dev/null; do :; done
+        [[ "$subnet" != "10.8.200.0/24" ]] && while iptables -D DOCKER-USER -s "10.8.200.0/24" -j ACCEPT 2>/dev/null; do :; done
         while iptables -D DOCKER-USER -i tun+ -j ACCEPT 2>/dev/null; do :; done
         while iptables -D DOCKER-USER -o tun+ -j ACCEPT 2>/dev/null; do :; done
     fi
 
-    # Clean all POSTROUTING NAT rules targeting the VPN subnet
-    while true; do
-        local rule_num=""
-        rule_num=$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | awk -v target_net="$subnet" '$0 ~ target_net {print $1; exit}' || true)
-        if [[ -n "$rule_num" && "$rule_num" =~ ^[0-9]+$ ]]; then
-            iptables -t nat -D POSTROUTING "$rule_num" 2>/dev/null || break
-        else
-            break
-        fi
+    # Clean all POSTROUTING NAT rules targeting active subnet and stale subnets
+    local targets=("$subnet")
+    [[ "$subnet" != "10.8.0.0/24" ]] && targets+=("10.8.0.0/24")
+    [[ "$subnet" != "10.8.200.0/24" ]] && targets+=("10.8.200.0/24")
+
+    for target_net in "${targets[@]}"; do
+        while true; do
+            local rule_num=""
+            rule_num=$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | awk -v tgt="$target_net" '$0 ~ tgt {print $1; exit}' || true)
+            if [[ -n "$rule_num" && "$rule_num" =~ ^[0-9]+$ ]]; then
+                iptables -t nat -D POSTROUTING "$rule_num" 2>/dev/null || break
+            else
+                break
+            fi
+        done
     done
 }
 
@@ -76,13 +99,25 @@ flush_openvpn_iptables_rules() {
 apply_iptables_rules() {
     local proto="${1:-${OPENVPN_PROTO:-udp}}"
     local port="${2:-${OPENVPN_PORT:-1194}}"
-    local subnet="${3:-${OPENVPN_CIDR:-10.8.0.0/24}}"
+    local subnet="${3:-${OPENVPN_CIDR:-}}"
     local iface="${4:-${PUBLIC_IFACE:-}}"
     local outbound_ip="${5:-${OUTBOUND_IP:-${PUBLIC_IP:-}}}"
     local nat_mode="${6:-${NAT_MODE:-SNAT}}"
 
-    if [[ -z "$iface" ]]; then
-        iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+    if [[ -z "$subnet" ]]; then
+        detect_vpn_subnet 2>/dev/null || true
+        subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
+    fi
+
+    if [[ -z "$iface" || ! -d "/sys/class/net/$iface" ]]; then
+        detect_network 2>/dev/null || true
+        iface="${PUBLIC_IFACE:-}"
+    fi
+
+    if [[ -z "$outbound_ip" || "$outbound_ip" == "127.0.0.1" ]]; then
+        if is_valid_ip "${PUBLIC_IP:-}" && ! is_private_ip "${PUBLIC_IP:-}"; then
+            outbound_ip="${PUBLIC_IP}"
+        fi
     fi
 
     # Ensure kernel packet forwarding is active
@@ -135,13 +170,25 @@ apply_iptables_rules() {
 create_persistent_firewall_script() {
     local proto="${1:-${OPENVPN_PROTO:-udp}}"
     local port="${2:-${OPENVPN_PORT:-1194}}"
-    local subnet="${3:-${OPENVPN_CIDR:-10.8.0.0/24}}"
+    local subnet="${3:-${OPENVPN_CIDR:-}}"
     local iface="${4:-${PUBLIC_IFACE:-}}"
     local outbound_ip="${5:-${OUTBOUND_IP:-${PUBLIC_IP:-}}}"
     local nat_mode="${6:-${NAT_MODE:-SNAT}}"
 
-    if [[ -z "$iface" ]]; then
-        iface=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
+    if [[ -z "$subnet" ]]; then
+        detect_vpn_subnet 2>/dev/null || true
+        subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
+    fi
+
+    if [[ -z "$iface" || ! -d "/sys/class/net/$iface" ]]; then
+        detect_network 2>/dev/null || true
+        iface="${PUBLIC_IFACE:-}"
+    fi
+
+    if [[ -z "$outbound_ip" || "$outbound_ip" == "127.0.0.1" ]]; then
+        if is_valid_ip "${PUBLIC_IP:-}" && ! is_private_ip "${PUBLIC_IP:-}"; then
+            outbound_ip="${PUBLIC_IP}"
+        fi
     fi
 
     mkdir -p /etc/openvpn
@@ -150,71 +197,74 @@ create_persistent_firewall_script() {
 # OpenVPN Persistent Firewall & NAT Rules
 action="\${1:-start}"
 
+# Dynamically source latest installer variables if available
+if [[ -f /etc/openvpn/installer-vars.conf ]]; then
+    source /etc/openvpn/installer-vars.conf
+fi
+
+proto="\${OPENVPN_PROTO:-${proto}}"
+port="\${OPENVPN_PORT:-${port}}"
+subnet="\${OPENVPN_CIDR:-${subnet}}"
+iface="\${PUBLIC_IFACE:-${iface}}"
+outbound_ip="\${OUTBOUND_IP:-\${PUBLIC_IP:-${outbound_ip}}}"
+nat_mode="\${NAT_MODE:-${nat_mode}}"
+
 case "\$action" in
     start)
         # 1. Allow Incoming Port
-        iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p ${proto} --dport ${port} -j ACCEPT
+        iptables -C INPUT -p "\$proto" --dport "\$port" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p "\$proto" --dport "\$port" -j ACCEPT
 
         # 2. Forwarding Chains
         iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-        iptables -C FORWARD -s ${subnet} -j ACCEPT 2>/dev/null || iptables -I FORWARD 2 -s ${subnet} -j ACCEPT
+        iptables -C FORWARD -s "\$subnet" -j ACCEPT 2>/dev/null || iptables -I FORWARD 2 -s "\$subnet" -j ACCEPT
         iptables -C FORWARD -i tun+ -j ACCEPT 2>/dev/null || iptables -I FORWARD 3 -i tun+ -j ACCEPT
         iptables -C FORWARD -o tun+ -j ACCEPT 2>/dev/null || iptables -I FORWARD 4 -o tun+ -j ACCEPT
 
         # 3. Docker Chain Compatibility
         if iptables -L DOCKER-USER &>/dev/null; then
             iptables -C DOCKER-USER -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 1 -m state --state RELATED,ESTABLISHED -j ACCEPT
-            iptables -C DOCKER-USER -s ${subnet} -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 2 -s ${subnet} -j ACCEPT
+            iptables -C DOCKER-USER -s "\$subnet" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 2 -s "\$subnet" -j ACCEPT
             iptables -C DOCKER-USER -i tun+ -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 3 -i tun+ -j ACCEPT
             iptables -C DOCKER-USER -o tun+ -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER 4 -o tun+ -j ACCEPT
         fi
-EOF
 
-    if [[ "$nat_mode" == "SNAT" ]] && is_valid_ip "$outbound_ip" && [[ "$outbound_ip" != "127.0.0.1" ]]; then
-        cat <<EOF >> /etc/openvpn/iptables-rules.sh
-
-        # 4. SNAT Rules
-        if [[ -n "${iface}" ]]; then
-            iptables -t nat -C POSTROUTING -s ${subnet} -o ${iface} -j SNAT --to-source ${outbound_ip} 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${subnet} -o ${iface} -j SNAT --to-source ${outbound_ip}
+        # 4. NAT Rules
+        if [[ "\$nat_mode" == "SNAT" ]] && [[ -n "\$outbound_ip" ]] && [[ "\$outbound_ip" != "127.0.0.1" ]]; then
+            if [[ -n "\$iface" ]]; then
+                iptables -t nat -C POSTROUTING -s "\$subnet" -o "\$iface" -j SNAT --to-source "\$outbound_ip" 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s "\$subnet" -o "\$iface" -j SNAT --to-source "\$outbound_ip"
+            fi
+            iptables -t nat -C POSTROUTING -s "\$subnet" ! -d "\$subnet" -j SNAT --to-source "\$outbound_ip" 2>/dev/null || iptables -t nat -I POSTROUTING 2 -s "\$subnet" ! -d "\$subnet" -j SNAT --to-source "\$outbound_ip"
+        else
+            if [[ -n "\$iface" ]]; then
+                iptables -t nat -C POSTROUTING -s "\$subnet" -o "\$iface" -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s "\$subnet" -o "\$iface" -j MASQUERADE
+            fi
+            iptables -t nat -C POSTROUTING -s "\$subnet" ! -d "\$subnet" -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING 2 -s "\$subnet" ! -d "\$subnet" -j MASQUERADE
         fi
-        iptables -t nat -C POSTROUTING -s ${subnet} ! -d ${subnet} -j SNAT --to-source ${outbound_ip} 2>/dev/null || iptables -t nat -I POSTROUTING 2 -s ${subnet} ! -d ${subnet} -j SNAT --to-source ${outbound_ip}
         ;;
-EOF
-    else
-        cat <<EOF >> /etc/openvpn/iptables-rules.sh
 
-        # 4. MASQUERADE Rules
-        if [[ -n "${iface}" ]]; then
-            iptables -t nat -C POSTROUTING -s ${subnet} -o ${iface} -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING 1 -s ${subnet} -o ${iface} -j MASQUERADE
-        fi
-        iptables -t nat -C POSTROUTING -s ${subnet} ! -d ${subnet} -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING 2 -s ${subnet} ! -d ${subnet} -j MASQUERADE
-        ;;
-EOF
-    fi
-
-    cat <<EOF >> /etc/openvpn/iptables-rules.sh
     stop)
-        while iptables -D INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D INPUT -p "\$proto" --dport "\$port" -j ACCEPT 2>/dev/null; do :; done
         while iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
-        while iptables -D FORWARD -s ${subnet} -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D FORWARD -s "\$subnet" -j ACCEPT 2>/dev/null; do :; done
         while iptables -D FORWARD -i tun+ -j ACCEPT 2>/dev/null; do :; done
         while iptables -D FORWARD -o tun+ -j ACCEPT 2>/dev/null; do :; done
 
         if iptables -L DOCKER-USER &>/dev/null; then
             while iptables -D DOCKER-USER -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
-            while iptables -D DOCKER-USER -s ${subnet} -j ACCEPT 2>/dev/null; do :; done
+            while iptables -D DOCKER-USER -s "\$subnet" -j ACCEPT 2>/dev/null; do :; done
             while iptables -D DOCKER-USER -i tun+ -j ACCEPT 2>/dev/null; do :; done
             while iptables -D DOCKER-USER -o tun+ -j ACCEPT 2>/dev/null; do :; done
         fi
 
-        while true; do
-            rule_num=""
-            rule_num=\$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | awk -v target_net="${subnet}" '\$0 ~ target_net {print \$1; exit}' || true)
-            if [[ -n "\$rule_num" && "\$rule_num" =~ ^[0-9]+$ ]]; then
-                iptables -t nat -D POSTROUTING "\$rule_num" 2>/dev/null || break
-            else
-                break
-            fi
+        for tgt in "\$subnet" "10.8.0.0/24" "10.8.200.0/24"; do
+            while true; do
+                rule_num=\$(iptables -t nat -L POSTROUTING --line-numbers -n 2>/dev/null | awk -v target_net="\$tgt" '\$0 ~ target_net {print \$1; exit}' || true)
+                if [[ -n "\$rule_num" && "\$rule_num" =~ ^[0-9]+$ ]]; then
+                    iptables -t nat -D POSTROUTING "\$rule_num" 2>/dev/null || break
+                else
+                    break
+                fi
+            done
         done
         ;;
 esac
@@ -256,8 +306,8 @@ toggle_iptables_rules() {
     load_installer_vars 2>/dev/null || true
     local proto="${OPENVPN_PROTO:-udp}"
     local port="${OPENVPN_PORT:-1194}"
-    local subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
-    local iface="${PUBLIC_IFACE:-}"
+    local subnet="${OPENVPN_CIDR}"
+    local iface="${PUBLIC_IFACE}"
     local outbound_ip="${OUTBOUND_IP:-${PUBLIC_IP:-}}"
     local nat_mode="${NAT_MODE:-SNAT}"
 
@@ -292,8 +342,8 @@ manage_firewall_menu() {
         load_installer_vars 2>/dev/null || true
         local proto="${OPENVPN_PROTO:-udp}"
         local port="${OPENVPN_PORT:-1194}"
-        local subnet="${OPENVPN_CIDR:-10.8.0.0/24}"
-        local iface="${PUBLIC_IFACE:-}"
+        local subnet="${OPENVPN_CIDR}"
+        local iface="${PUBLIC_IFACE}"
         local outbound_ip="${OUTBOUND_IP:-${PUBLIC_IP:-}}"
         local nat_mode="${NAT_MODE:-SNAT}"
 

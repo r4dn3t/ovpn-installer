@@ -19,7 +19,7 @@ if is_installed; then
     load_installer_vars 2>/dev/null || true
     # Only re-apply rules if IPTABLES_ENABLED is not explicitly 0
     if [[ "${IPTABLES_ENABLED:-1}" != "0" ]]; then
-        apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" "${OUTBOUND_IP:-${PUBLIC_IP:-}}" "${NAT_MODE:-SNAT}"
+        apply_iptables_rules "$OPENVPN_PROTO" "$OPENVPN_PORT" "$OPENVPN_CIDR" "$PUBLIC_IFACE" "$OUTBOUND_IP" "$NAT_MODE"
     fi
 else
     IS_INSTALLED=false
@@ -52,8 +52,8 @@ while true; do
     fi
 
     iptables_summary=""
-    if is_iptables_active "${OPENVPN_CIDR:-10.8.0.0/24}"; then
-        iptables_summary="${GREEN}Active ($(get_iptables_nat_mode "${OPENVPN_CIDR:-10.8.0.0/24}"))${NC}"
+    if is_iptables_active "$OPENVPN_CIDR"; then
+        iptables_summary="${GREEN}Active ($(get_iptables_nat_mode "$OPENVPN_CIDR"))${NC}"
     else
         iptables_summary="${RED}Disabled / Inactive${NC}"
     fi
@@ -61,7 +61,7 @@ while true; do
     msg_section "OpenVPN Control Center"
     echo -e "Server Public IP : ${CYAN}${PUBLIC_IP:-Unknown}${NC}"
     echo -e "Port / Protocol  : ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
-    echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}"
+    echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR}${NC}"
     echo -e "MikroTik Support : ${MIKROTIK_STATUS}"
     echo -e "iptables Rules   : ${iptables_summary}\n"
 
@@ -111,8 +111,8 @@ while true; do
         6)
             msg_section "Server Diagnostics & Configuration Repair"
             repair_server_config
-            apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" "${OUTBOUND_IP:-${PUBLIC_IP:-}}" "${NAT_MODE:-SNAT}"
-            create_persistent_firewall_script "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" "${OUTBOUND_IP:-${PUBLIC_IP:-}}" "${NAT_MODE:-SNAT}"
+            apply_iptables_rules "$OPENVPN_PROTO" "$OPENVPN_PORT" "$OPENVPN_CIDR" "$PUBLIC_IFACE" "$OUTBOUND_IP" "$NAT_MODE"
+            create_persistent_firewall_script "$OPENVPN_PROTO" "$OPENVPN_PORT" "$OPENVPN_CIDR" "$PUBLIC_IFACE" "$OUTBOUND_IP" "$NAT_MODE"
             msg_success "Configuration checked, and iptables rules re-applied and persisted."
             read -rp "Press Enter to return to main menu..."
             ;;

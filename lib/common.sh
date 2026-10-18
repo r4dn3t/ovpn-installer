@@ -129,37 +129,165 @@ sanitize_name() {
     echo "$name" | sed 's/[^a-zA-Z0-9_-]/_/g'
 }
 
-# Detect Default Network Interface & Public IP via api.ipify.org with IP regex validation
-detect_network() {
-    # Default public interface
-    PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1)
-    if [[ -z "$PUBLIC_IFACE" ]]; then
-        PUBLIC_IFACE=$(ip link show | grep -v "lo:" | awk -F': ' '$2!="" {print $2}' | head -n1)
+# Check if an IP address is an RFC 1918 private / loopback / link-local address
+is_private_ip() {
+    local ip="${1:-}"
+    [[ "$ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|127\.|169\.254\.) ]]
+}
+
+# Convert IPv4 netmask to CIDR prefix length (e.g. 255.255.255.0 -> 24)
+netmask_to_cidr() {
+    local mask="${1:-255.255.255.0}"
+    local cidr=0
+    local IFS='.'
+    local -a octets=($mask)
+    for octet in "${octets[@]}"; do
+        case "$octet" in
+            255) ((cidr += 8)) ;;
+            254) ((cidr += 7)) ;;
+            252) ((cidr += 6)) ;;
+            248) ((cidr += 5)) ;;
+            240) ((cidr += 4)) ;;
+            224) ((cidr += 3)) ;;
+            192) ((cidr += 2)) ;;
+            128) ((cidr += 1)) ;;
+            0)   ;;
+            *)   ((cidr += 8)) ;;
+        esac
+    done
+    echo "$cidr"
+}
+
+# Dynamically detect active OpenVPN subnet & CIDR from configuration or running interface
+detect_vpn_subnet() {
+    local conf=""
+    if [[ -f "/etc/openvpn/server/server.conf" ]]; then
+        conf="/etc/openvpn/server/server.conf"
+    elif [[ -f "/etc/openvpn/server.conf" ]]; then
+        conf="/etc/openvpn/server.conf"
     fi
 
-    PUBLIC_IP=""
-    local endpoints=(
-        "https://api.ipify.org"
-        "https://ifconfig.me"
-        "https://icanhazip.com"
-        "https://api4.ipify.org"
-        "https://ipinfo.io/ip"
-    )
+    local detected_net=""
+    local detected_mask=""
+    local detected_cidr=""
 
-    for url in "${endpoints[@]}"; do
-        local raw_res
-        raw_res=$(curl -s4 --fail --max-time 4 "$url" 2>/dev/null || true)
-        # Extract only valid IPv4 pattern, ignoring HTML/error tags
-        local extracted_ip
-        extracted_ip=$(echo "$raw_res" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 || true)
-        if is_valid_ip "$extracted_ip"; then
-            PUBLIC_IP="$extracted_ip"
-            break
+    # 1. Primary ground truth: Active server.conf 'server' directive
+    if [[ -n "$conf" ]]; then
+        local server_line
+        server_line=$(grep -E '^\s*server\s+' "$conf" | head -n1 || true)
+        if [[ -n "$server_line" ]]; then
+            detected_net=$(echo "$server_line" | awk '{print $2}' | tr -d '\r')
+            detected_mask=$(echo "$server_line" | awk '{print $3}' | tr -d '\r')
+            if is_valid_ip "$detected_net"; then
+                if [[ -z "$detected_mask" ]] || ! is_valid_ip "$detected_mask"; then
+                    detected_mask="255.255.255.0"
+                fi
+                local prefix
+                prefix=$(netmask_to_cidr "$detected_mask")
+                detected_cidr="${detected_net}/${prefix}"
+            fi
         fi
-    done
+    fi
 
-    # Fallback to local interface IP if external services fail or return HTML
-    if ! is_valid_ip "${PUBLIC_IP:-}" && [[ -n "${PUBLIC_IFACE:-}" ]]; then
+    # 2. Secondary source: Live active tun interface (e.g. tun0)
+    if [[ -z "$detected_cidr" ]] || ! is_valid_cidr "$detected_cidr"; then
+        local tun_info
+        tun_info=$(ip -o -4 addr show 2>/dev/null | grep -E '\s+tun[0-9]*\s+' | head -n1 || true)
+        if [[ -n "$tun_info" ]]; then
+            local tun_cidr
+            tun_cidr=$(echo "$tun_info" | awk '{print $4}' | head -n1 || true)
+            if [[ "$tun_cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
+                local tun_ip="${tun_cidr%/*}"
+                local tun_prefix="${tun_cidr#*/}"
+                if [[ "$tun_prefix" == "32" ]]; then
+                    detected_net="${tun_ip%.*}.0"
+                    detected_mask="255.255.255.0"
+                    detected_cidr="${detected_net}/24"
+                else
+                    detected_net="${tun_ip%.*}.0"
+                    detected_cidr="${detected_net}/${tun_prefix}"
+                    case "$tun_prefix" in
+                        24) detected_mask="255.255.255.0" ;;
+                        16) detected_mask="255.255.0.0" ;;
+                        8)  detected_mask="255.0.0.0" ;;
+                        *)  detected_mask="255.255.255.0" ;;
+                    esac
+                fi
+            fi
+        fi
+    fi
+
+    # 3. Tertiary source: Existing installer-vars.conf if already set
+    if [[ -z "$detected_cidr" ]] || ! is_valid_cidr "$detected_cidr"; then
+        if [[ -n "${OPENVPN_CIDR:-}" ]] && is_valid_cidr "$OPENVPN_CIDR"; then
+            detected_cidr="$OPENVPN_CIDR"
+            detected_net="${OPENVPN_CIDR%/*}"
+            detected_mask="${OPENVPN_NETMASK:-255.255.255.0}"
+        fi
+    fi
+
+    # 4. Fallback default
+    if [[ -z "$detected_cidr" ]] || ! is_valid_cidr "$detected_cidr"; then
+        detected_net="10.8.0.0"
+        detected_mask="255.255.255.0"
+        detected_cidr="10.8.0.0/24"
+    fi
+
+    OPENVPN_SUBNET="$detected_net"
+    OPENVPN_NETMASK="${detected_mask:-255.255.255.0}"
+    OPENVPN_CIDR="$detected_cidr"
+}
+
+# Detect Default Network Interface & Public IP with multi-IP interface awareness
+detect_network() {
+    # Default public interface: inspect default routing table
+    PUBLIC_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -n1 || true)
+    
+    # If not found or not in /sys/class/net, find first physical/ethernet device (excluding docker, veth, br, tun, lo)
+    if [[ -z "$PUBLIC_IFACE" || ! -d "/sys/class/net/$PUBLIC_IFACE" ]]; then
+        PUBLIC_IFACE=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -vE '^(lo|docker[0-9]*|br-[0-9a-f]+|veth|tun[0-9]*|tap[0-9]*)' | head -n1 || true)
+    fi
+
+    # Detect Public IP
+    PUBLIC_IP=""
+
+    # 1. Check if PUBLIC_IFACE has a public IP address bound to it directly (e.g. multi-IP setups)
+    if [[ -n "${PUBLIC_IFACE:-}" && -d "/sys/class/net/${PUBLIC_IFACE}" ]]; then
+        local candidate_ips
+        candidate_ips=$(ip -4 -o addr show dev "$PUBLIC_IFACE" 2>/dev/null | awk '{print $4}' | cut -d'/' -f1 || true)
+        for cand in $candidate_ips; do
+            if is_valid_ip "$cand" && ! is_private_ip "$cand"; then
+                PUBLIC_IP="$cand"
+                break
+            fi
+        done
+    fi
+
+    # 2. Query external IP check endpoints
+    if ! is_valid_ip "${PUBLIC_IP:-}"; then
+        local endpoints=(
+            "https://api.ipify.org"
+            "https://ifconfig.me"
+            "https://icanhazip.com"
+            "https://api4.ipify.org"
+            "https://ipinfo.io/ip"
+        )
+
+        for url in "${endpoints[@]}"; do
+            local raw_res
+            raw_res=$(curl -s4 --fail --max-time 3 "$url" 2>/dev/null || true)
+            # Extract only valid IPv4 pattern, ignoring HTML/error tags
+            local extracted_ip
+            extracted_ip=$(echo "$raw_res" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1 || true)
+            if is_valid_ip "$extracted_ip"; then
+                PUBLIC_IP="$extracted_ip"
+                break
+            fi
+        done
+    fi
+
+    # 3. Fallback to primary IP of the interface if external services fail or return HTML
+    if ! is_valid_ip "${PUBLIC_IP:-}" && [[ -n "${PUBLIC_IFACE:-}" && -d "/sys/class/net/${PUBLIC_IFACE}" ]]; then
         local iface_ip
         iface_ip=$(ip -4 addr show "$PUBLIC_IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || true)
         if is_valid_ip "$iface_ip"; then
@@ -167,7 +295,7 @@ detect_network() {
         fi
     fi
 
-    # Final fallback if no valid IP detected
+    # 4. Final fallback if no valid IP detected
     if ! is_valid_ip "${PUBLIC_IP:-}"; then
         PUBLIC_IP="127.0.0.1"
     fi
@@ -200,80 +328,63 @@ is_installed() {
     return 1
 }
 
-# Load OpenVPN Installer Config Vars (with auto-reconstruction & default fallbacks)
+# Load OpenVPN Installer Config Vars (with dynamic detection & synchronization from live config)
 load_installer_vars() {
     VARS_FILE="/etc/openvpn/installer-vars.conf"
     
+    # 1. Source VARS_FILE if it exists
     if [[ -f "$VARS_FILE" ]]; then
         source "$VARS_FILE"
-        # Validate sourced PUBLIC_IP - if invalid (e.g. contains HTML tags), re-detect & sanitize VARS_FILE
-        if ! is_valid_ip "${PUBLIC_IP:-}"; then
-            detect_network
-            sed -i "s|^PUBLIC_IP=.*|PUBLIC_IP=\"${PUBLIC_IP}\"|" "$VARS_FILE" 2>/dev/null || true
-        fi
-    else
-        # If installer-vars.conf is missing but server.conf exists, reconstruct vars
-        local conf=""
-        if [[ -f "/etc/openvpn/server/server.conf" ]]; then
-            conf="/etc/openvpn/server/server.conf"
-        elif [[ -f "/etc/openvpn/server.conf" ]]; then
-            conf="/etc/openvpn/server.conf"
-        fi
+    fi
 
-        if [[ -n "$conf" ]]; then
-            detect_network
-            OPENVPN_PORT=$(grep -E '^port ' "$conf" | awk '{print $2}' | head -n1 || echo "1194")
-            OPENVPN_PROTO=$(grep -E '^proto ' "$conf" | awk '{print $2}' | head -n1 || echo "udp")
-            
-            local server_line
-            server_line=$(grep -E '^server ' "$conf" | head -n1 || true)
-            if [[ -n "$server_line" ]]; then
-                OPENVPN_SUBNET=$(echo "$server_line" | awk '{print $2}')
-                OPENVPN_NETMASK=$(echo "$server_line" | awk '{print $3}')
-            else
-                OPENVPN_SUBNET="10.8.0.0"
-                OPENVPN_NETMASK="255.255.255.0"
-            fi
-            
-            OPENVPN_CIDR="${OPENVPN_SUBNET}/24"
-            DNS_1=$(grep -E 'dhcp-option DNS' "$conf" | head -n1 | awk '{print $3}' || echo "1.1.1.1")
-            DNS_2=$(grep -E 'dhcp-option DNS' "$conf" | sed -n '2p' | awk '{print $3}' || echo "1.0.0.1")
-            CIPHER=$(grep -E '^cipher ' "$conf" | awk '{print $2}' | head -n1 || echo "AES-256-GCM")
-            CERT_TYPE="ec"
-            EASYRSA_DIR="/etc/openvpn/easy-rsa"
-            PKI_DIR="/etc/openvpn/easy-rsa/pki"
-            CLIENT_DIR="/etc/openvpn/client-profiles"
+    # 2. Locate active server.conf
+    local conf=""
+    if [[ -f "/etc/openvpn/server/server.conf" ]]; then
+        conf="/etc/openvpn/server/server.conf"
+    elif [[ -f "/etc/openvpn/server.conf" ]]; then
+        conf="/etc/openvpn/server.conf"
+    fi
 
-            # Auto-create the installer-vars.conf file for future script executions
-            mkdir -p /etc/openvpn
-            cat <<EOF > "$VARS_FILE"
-PUBLIC_IP="${PUBLIC_IP}"
-PUBLIC_IFACE="${PUBLIC_IFACE}"
-OPENVPN_PROTO="${OPENVPN_PROTO}"
-OPENVPN_PORT="${OPENVPN_PORT}"
-OPENVPN_CIDR="${OPENVPN_CIDR}"
-OPENVPN_SUBNET="${OPENVPN_SUBNET}"
-OPENVPN_NETMASK="${OPENVPN_NETMASK}"
-DNS_1="${DNS_1}"
-DNS_2="${DNS_2}"
-CIPHER="${CIPHER}"
-CERT_TYPE="${CERT_TYPE}"
-EASYRSA_DIR="${EASYRSA_DIR}"
-PKI_DIR="${PKI_DIR}"
-CLIENT_DIR="${CLIENT_DIR}"
-EOF
-            source "$VARS_FILE"
+    # 3. Synchronize Port, Proto, Cipher from server.conf if present
+    if [[ -n "$conf" ]]; then
+        local p
+        p=$(grep -E '^\s*port\s+' "$conf" | awk '{print $2}' | tr -d '\r' | head -n1 || true)
+        [[ -n "$p" ]] && OPENVPN_PORT="$p"
+
+        local pr
+        pr=$(grep -E '^\s*proto\s+' "$conf" | awk '{print $2}' | tr -d '\r' | head -n1 || true)
+        [[ -n "$pr" ]] && OPENVPN_PROTO="$pr"
+
+        local c
+        c=$(grep -E '^\s*cipher\s+' "$conf" | awk '{print $2}' | tr -d '\r' | head -n1 || true)
+        [[ -n "$c" ]] && CIPHER="$c"
+    fi
+
+    # 4. Always dynamically detect the active VPN Subnet & CIDR from server.conf / live tun
+    detect_vpn_subnet
+
+    # 5. Verify & detect PUBLIC_IFACE: if missing or interface doesn't exist on host, re-detect
+    if [[ -z "${PUBLIC_IFACE:-}" || ! -d "/sys/class/net/${PUBLIC_IFACE}" ]]; then
+        detect_network
+    fi
+
+    # 6. Verify & detect PUBLIC_IP
+    if ! is_valid_ip "${PUBLIC_IP:-}" || [[ "${PUBLIC_IP:-}" == "127.0.0.1" ]]; then
+        detect_network
+    fi
+
+    # 7. Verify & resolve OUTBOUND_IP: on multi-IP hosts, OUTBOUND_IP must be the public egress IP
+    if ! is_valid_ip "${OUTBOUND_IP:-}" || is_private_ip "${OUTBOUND_IP:-}" || [[ "${OUTBOUND_IP:-}" == "127.0.0.1" ]]; then
+        if is_valid_ip "${PUBLIC_IP:-}" && ! is_private_ip "${PUBLIC_IP:-}"; then
+            OUTBOUND_IP="${PUBLIC_IP}"
+        else
+            OUTBOUND_IP="${PUBLIC_IP:-127.0.0.1}"
         fi
     fi
 
-    # Set robust default fallbacks for ALL installer variables to ensure set -u never fails
-    PUBLIC_IP="${PUBLIC_IP:-127.0.0.1}"
-    PUBLIC_IFACE="${PUBLIC_IFACE:-eth0}"
-    OPENVPN_PROTO="${OPENVPN_PROTO:-udp}"
+    # 8. Defaults for missing auxiliary parameters
     OPENVPN_PORT="${OPENVPN_PORT:-1194}"
-    OPENVPN_CIDR="${OPENVPN_CIDR:-10.8.0.0/24}"
-    OPENVPN_SUBNET="${OPENVPN_SUBNET:-10.8.0.0}"
-    OPENVPN_NETMASK="${OPENVPN_NETMASK:-255.255.255.0}"
+    OPENVPN_PROTO="${OPENVPN_PROTO:-udp}"
     DNS_1="${DNS_1:-1.1.1.1}"
     DNS_2="${DNS_2:-1.0.0.1}"
     CIPHER="${CIPHER:-AES-256-GCM}"
@@ -283,8 +394,12 @@ EOF
     CLIENT_DIR="${CLIENT_DIR:-/etc/openvpn/client-profiles}"
     USE_TLS_CRYPT="${USE_TLS_CRYPT:-0}"
     NAT_MODE="${NAT_MODE:-SNAT}"
-    OUTBOUND_IP="${OUTBOUND_IP:-${PUBLIC_IP:-}}"
     IPTABLES_ENABLED="${IPTABLES_ENABLED:-1}"
+
+    # 9. If server is installed, save synchronized variables so all scripts stay in sync
+    if is_installed 2>/dev/null; then
+        save_installer_vars 2>/dev/null || true
+    fi
 
     return 0
 }
@@ -325,7 +440,7 @@ show_detailed_info() {
     echo -e "   - Public IP           : ${CYAN}${PUBLIC_IP:-Unknown}${NC}"
     echo -e "   - Network Interface   : ${CYAN}${PUBLIC_IFACE:-Unknown}${NC}"
     echo -e "   - OpenVPN Port / Proto: ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
-    echo -e "   - VPN Subnet CIDR     : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}"
+    echo -e "   - VPN Subnet CIDR     : ${CYAN}${OPENVPN_CIDR}${NC}"
     echo -e "   - Cipher & Cert Type  : ${CYAN}${CIPHER:-AES-256-GCM} (${CERT_TYPE:-ec})${NC}"
     echo -e "   - NAT Mode & Outbound : ${CYAN}${NAT_MODE:-SNAT}${NC} (IP: ${YELLOW}${OUTBOUND_IP:-${PUBLIC_IP:-Unknown}}${NC})"
     echo ""
