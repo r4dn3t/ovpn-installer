@@ -51,7 +51,7 @@ while true; do
         MIKROTIK_STATUS="${GREEN}Enabled (Standard TLS / MikroTik Ready)${NC}"
     fi
 
-    local iptables_summary
+    iptables_summary=""
     if is_iptables_active "${OPENVPN_CIDR:-10.8.0.0/24}"; then
         iptables_summary="${GREEN}Active ($(get_iptables_nat_mode "${OPENVPN_CIDR:-10.8.0.0/24}"))${NC}"
     else
