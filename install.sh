@@ -327,6 +327,9 @@ EASYRSA_DIR="${EASYRSA_DIR}"
 PKI_DIR="${EASYRSA_DIR}/pki"
 CLIENT_DIR="/etc/openvpn/client-profiles"
 USE_TLS_CRYPT="${USE_TLS_CRYPT}"
+OUTBOUND_IP="${SERVER_IP}"
+NAT_MODE="SNAT"
+IPTABLES_ENABLED="1"
 EOF
 
 msg_info "Starting and enabling OpenVPN server systemd service..."

@@ -11,7 +11,11 @@ A modular, robust, and secure Bash script suite designed to install, configure, 
 * **Detailed Path & Profile Inspector**: Displays a complete overview of all installation directories, PKI infrastructure keys, configuration files, and generated client `.ovpn` / MikroTik profiles.
 * **Modern Cryptography & Security**: Supports modern Elliptic Curve Cryptography (`prime256v1` / ECDSA) and high-assurance RSA keys (2048/4096-bit), `AES-256-GCM` encryption, and `tls-crypt` packet authentication.
 * **Flexible Networking**: Customize network interface, public IP / domain name, VPN CIDR IP range (e.g. `10.8.0.0/24`), protocol (UDP / TCP), custom port (default `1194`), and DNS resolvers (Cloudflare, Google, Quad9, OpenDNS, or Custom).
-* **Automated Firewall NAT Configuration**: Seamless integration with **iptables**, **UFW**, and **firewalld**, with kernel IPv4 packet forwarding auto-configuration.
+* **Automated & Configurable Firewall NAT**:
+  * Seamless integration with **iptables**, **UFW**, and **firewalld**.
+  * Full **Docker compatibility** (`DOCKER-USER` chain & `FORWARD` drop bypassing).
+  * **Interactive Firewall & iptables Toggle Menu**: Enable/disable OpenVPN iptables rules anytime, switch between **SNAT** (fixed public IP for multi-IP interfaces) and **MASQUERADE**, change outbound IP, and view live iptables dumps.
+  * **Persistent Rules**: Built-in systemd service (`openvpn-iptables.service`) running after Docker, plus native integration with `iptables-persistent` / `netfilter-persistent`.
 * **Platform-Specific Device Profiles & Guidelines**:
   * 📱 **iOS (iPhone/iPad)**: Single embedded `.ovpn` file + Terminal ASCII QR Code scanning.
   * 💻 **macOS**: Native profile format for **Tunnelblick** & OpenVPN Connect.

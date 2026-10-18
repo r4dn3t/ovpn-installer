@@ -281,8 +281,38 @@ EOF
     EASYRSA_DIR="${EASYRSA_DIR:-/etc/openvpn/easy-rsa}"
     PKI_DIR="${PKI_DIR:-${EASYRSA_DIR}/pki}"
     CLIENT_DIR="${CLIENT_DIR:-/etc/openvpn/client-profiles}"
+    USE_TLS_CRYPT="${USE_TLS_CRYPT:-0}"
+    NAT_MODE="${NAT_MODE:-SNAT}"
+    OUTBOUND_IP="${OUTBOUND_IP:-${PUBLIC_IP:-}}"
+    IPTABLES_ENABLED="${IPTABLES_ENABLED:-1}"
 
     return 0
+}
+
+# Save current installer and firewall variables to /etc/openvpn/installer-vars.conf
+save_installer_vars() {
+    VARS_FILE="/etc/openvpn/installer-vars.conf"
+    mkdir -p /etc/openvpn
+    cat <<EOF > "$VARS_FILE"
+PUBLIC_IP="${PUBLIC_IP}"
+PUBLIC_IFACE="${PUBLIC_IFACE}"
+OPENVPN_PROTO="${OPENVPN_PROTO}"
+OPENVPN_PORT="${OPENVPN_PORT}"
+OPENVPN_CIDR="${OPENVPN_CIDR}"
+OPENVPN_SUBNET="${OPENVPN_SUBNET}"
+OPENVPN_NETMASK="${OPENVPN_NETMASK}"
+DNS_1="${DNS_1}"
+DNS_2="${DNS_2}"
+CIPHER="${CIPHER}"
+CERT_TYPE="${CERT_TYPE}"
+EASYRSA_DIR="${EASYRSA_DIR}"
+PKI_DIR="${PKI_DIR}"
+CLIENT_DIR="${CLIENT_DIR}"
+USE_TLS_CRYPT="${USE_TLS_CRYPT:-0}"
+NAT_MODE="${NAT_MODE:-SNAT}"
+OUTBOUND_IP="${OUTBOUND_IP:-${PUBLIC_IP}}"
+IPTABLES_ENABLED="${IPTABLES_ENABLED:-1}"
+EOF
 }
 
 # Display Detailed System Paths, Folders and Generated Profiles Info
@@ -297,6 +327,7 @@ show_detailed_info() {
     echo -e "   - OpenVPN Port / Proto: ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
     echo -e "   - VPN Subnet CIDR     : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}"
     echo -e "   - Cipher & Cert Type  : ${CYAN}${CIPHER:-AES-256-GCM} (${CERT_TYPE:-ec})${NC}"
+    echo -e "   - NAT Mode & Outbound : ${CYAN}${NAT_MODE:-SNAT}${NC} (IP: ${YELLOW}${OUTBOUND_IP:-${PUBLIC_IP:-Unknown}}${NC})"
     echo ""
 
     echo -e "${BOLD}2. Installation Directories Used:${NC}"
@@ -329,6 +360,8 @@ show_detailed_info() {
         "/etc/openvpn/tls-crypt.key:TLS Crypt Control Channel Key"
         "/etc/openvpn/server/dh.pem:Diffie-Hellman Parameters"
         "/etc/openvpn/server/crl.pem:Certificate Revocation List (CRL)"
+        "/etc/openvpn/iptables-rules.sh:Firewall & NAT Persistence Script"
+        "/etc/systemd/system/openvpn-iptables.service:Firewall Systemd Service"
         "/etc/sysctl.d/99-openvpn.conf:Kernel IP Forwarding Sysctl Config"
         "/var/log/openvpn/openvpn.log:Server Log File"
         "/var/log/openvpn/openvpn-status.log:Active Connection Status Log"

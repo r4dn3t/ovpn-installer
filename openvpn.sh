@@ -17,8 +17,10 @@ if is_installed; then
     IS_INSTALLED=true
     repair_server_config
     load_installer_vars 2>/dev/null || true
-    apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}"
-    create_persistent_firewall_script "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" 2>/dev/null || true
+    # Only re-apply rules if IPTABLES_ENABLED is not explicitly 0
+    if [[ "${IPTABLES_ENABLED:-1}" != "0" ]]; then
+        apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" "${OUTBOUND_IP:-${PUBLIC_IP:-}}" "${NAT_MODE:-SNAT}"
+    fi
 else
     IS_INSTALLED=false
 fi
@@ -39,6 +41,7 @@ fi
 
 # Main Menu Loop for Installed Server Management
 while true; do
+    load_installer_vars 2>/dev/null || true
     CONF_FILE="/etc/openvpn/server/server.conf"
     local_has_tls_crypt=false
     if grep -qE '^tls-crypt' "$CONF_FILE" 2>/dev/null; then
@@ -48,21 +51,30 @@ while true; do
         MIKROTIK_STATUS="${GREEN}Enabled (Standard TLS / MikroTik Ready)${NC}"
     fi
 
+    local iptables_summary
+    if is_iptables_active "${OPENVPN_CIDR:-10.8.0.0/24}"; then
+        iptables_summary="${GREEN}Active ($(get_iptables_nat_mode "${OPENVPN_CIDR:-10.8.0.0/24}"))${NC}"
+    else
+        iptables_summary="${RED}Disabled / Inactive${NC}"
+    fi
+
     msg_section "OpenVPN Control Center"
     echo -e "Server Public IP : ${CYAN}${PUBLIC_IP:-Unknown}${NC}"
     echo -e "Port / Protocol  : ${CYAN}${OPENVPN_PORT:-1194} / ${OPENVPN_PROTO:-udp}${NC}"
     echo -e "VPN Subnet       : ${CYAN}${OPENVPN_CIDR:-10.8.0.0/24}${NC}"
-    echo -e "MikroTik Support : ${MIKROTIK_STATUS}\n"
+    echo -e "MikroTik Support : ${MIKROTIK_STATUS}"
+    echo -e "iptables Rules   : ${iptables_summary}\n"
 
     echo "   1) User Management (Add, Revoke, List, Export Profiles)"
     echo "   2) Create a New User Profile"
     echo "   3) Display Installation Directories & Generated Profiles (Detail Info)"
     echo "   4) Toggle MikroTik Compatibility (Enable/Disable tls-crypt)"
-    echo "   5) Run Server Diagnostics & Repair Configuration"
-    echo "   6) Check OpenVPN Service Status & Active Connections"
-    echo "   7) Uninstall OpenVPN Server"
-    echo "   8) Exit"
-    read -rp "Select an option [1-8]: " main_choice
+    echo "   5) Firewall & iptables Rules Management (Toggle, SNAT/MASQUERADE, Persist)"
+    echo "   6) Run Server Diagnostics & Repair Configuration"
+    echo "   7) Check OpenVPN Service Status & Active Connections"
+    echo "   8) Uninstall OpenVPN Server"
+    echo "   9) Exit"
+    read -rp "Select an option [1-9]: " main_choice
 
     case "$main_choice" in
         1)
@@ -94,14 +106,17 @@ while true; do
             read -rp "Press Enter to return to main menu..."
             ;;
         5)
-            msg_section "Server Diagnostics & Configuration Repair"
-            repair_server_config
-            apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}"
-            create_persistent_firewall_script "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" 2>/dev/null || true
-            msg_success "Firewall NAT & Docker forwarding rules applied and persisted via openvpn-iptables.service."
-            read -rp "Press Enter to return to main menu..."
+            manage_firewall_menu
             ;;
         6)
+            msg_section "Server Diagnostics & Configuration Repair"
+            repair_server_config
+            apply_iptables_rules "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" "${OUTBOUND_IP:-${PUBLIC_IP:-}}" "${NAT_MODE:-SNAT}"
+            create_persistent_firewall_script "${OPENVPN_PROTO:-udp}" "${OPENVPN_PORT:-1194}" "${OPENVPN_CIDR:-10.8.0.0/24}" "${PUBLIC_IFACE:-}" "${OUTBOUND_IP:-${PUBLIC_IP:-}}" "${NAT_MODE:-SNAT}"
+            msg_success "Configuration checked, and iptables rules re-applied and persisted."
+            read -rp "Press Enter to return to main menu..."
+            ;;
+        7)
             msg_section "OpenVPN Service & Active Connections"
             systemctl status openvpn-server@server --no-pager 2>/dev/null || systemctl status openvpn@server --no-pager 2>/dev/null || true
             if [[ -f /var/log/openvpn/openvpn-status.log ]]; then
@@ -111,15 +126,15 @@ while true; do
             echo ""
             read -rp "Press Enter to return to main menu..."
             ;;
-        7)
+        8)
             "${SCRIPT_DIR}/uninstall.sh"
             exit 0
             ;;
-        8)
+        9)
             exit 0
             ;;
         *)
-            msg_warn "Invalid option. Please select 1-8."
+            msg_warn "Invalid option. Please select 1-9."
             ;;
     esac
 done
